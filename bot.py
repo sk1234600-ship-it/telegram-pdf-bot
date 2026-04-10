@@ -104,7 +104,7 @@ Each object may have these keys: "vehicle", "dc", "eway", "received", "cust_name
 If a field is not present in the text, simply omit it from the JSON (do not include a null value).
 
 Rules:
-- vehicle: registration like "XX00XX0000". Extract only the number.
+- vehicle: full registration string, e.g., "MP09HH4381". Keep letters and digits. Do not remove any characters. Return the entire registration exactly as written.
 - dc: a 2-4 digit number (standalone or after "DC-" / "DC:").
 - eway: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the start datetime.
 - received: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the end datetime.
@@ -436,10 +436,10 @@ logger = logging.getLogger(__name__)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *PDF Generator Bot Ready!*\n\n"
-        "Send me raw trip data. I'll extract vehicle, DC, dates, and optional customer details.\n\n"
-        "Example with custom details:\n"
-        "`MP09HH4340\\nDC:482\\nReceived: 13-03\\nEway: 09-03 @10:36am\\nName: VIPUL MITTAL\\nID: 11593956\\nMobile: 9826260443\\nTag: 21434130`\n\n"
-        "If you omit optional details, I'll use defaults.",
+        "⚡⚡Send me raw trip data. I'll extract vehicle, DC, dates, and optional customer details.⚡⚡\n\n"
+        "✅Example with custom details:\n"
+        "✅`MP09HH4340\\nDC:482\\nReceived: 13-03\\nEway: 09-03 @10:36am\\nName: VIPUL MITTAL\\nID: 11593956\\nMobile: 9826260443\\nTag: 21434130`\n\n"
+        "⚠️If you omit optional details, I'll use defaults.",
         parse_mode="Markdown"
     )
 
@@ -461,6 +461,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not entries:
             await update.message.reply_text("❌ Could not extract any valid trip data. Please check the format.")
             return
+
+        # Validate vehicle numbers (must match full registration pattern)
+        vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
+        for entry in entries:
+            vehicle = entry.get("vehicle", "")
+            if not vehicle_pattern.match(vehicle):
+                await update.message.reply_text(
+                    f"❌ Invalid vehicle number: '{vehicle}'. Please provide full registration like MP09HH4381."
+                )
+                return
 
         await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
 
