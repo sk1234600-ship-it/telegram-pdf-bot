@@ -8,34 +8,30 @@ import random
 import json
 import time
 from datetime import datetime, timedelta
-from threading import Thread
+from contextlib import asynccontextmanager
 
-from flask import Flask
+from fastapi import FastAPI, Request, Response
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import fitz  # PyMuPDF
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import uvicorn
+import fitz
 from google import genai
 
-# ================= CONFIGURATION (READ FROM ENVIRONMENT) =================
+# ================= CONFIGURATION =================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variables")
 
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable")
-if not GEMINI_API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY environment variable")
-
-# Path to your template PDF – must be in the same directory as bot.py
-INPUT_PDF = "template.pdf"
 PARSER_MODE = "gemini"   # or "fallback"
 
-# Default customer details (can be overridden per entry)
+# Default customer details
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
 DEFAULT_MOBILE      = "9826260443"
 DEFAULT_TAG_ACCOUNT = "21434130"
 
-# ================= COLORS & METRICS (unchanged) =================
+# ================= COLORS & METRICS =================
 TEXT_COLOR = (0, 0, 0)
 FONT_SIZE = 8
 
@@ -72,7 +68,6 @@ TOLL_DEBITS = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 # ================= DATE NORMALIZATION =================
 def add_current_year_if_missing(date_str):
-    """Convert dd-mm to dd-mm-yyyy using current year; keep dd-mm-yyyy unchanged."""
     if not date_str:
         return date_str
     s = date_str.strip()
@@ -85,7 +80,6 @@ def add_current_year_if_missing(date_str):
     return s
 
 def normalize_datetime_year(dt_str):
-    """Normalize datetime string to ensure date has year (dd-mm-yyyy HH:MM:SS)."""
     if not dt_str:
         return dt_str
     s = dt_str.strip()
@@ -98,19 +92,12 @@ def normalize_datetime_year(dt_str):
     return f"{day}-{month}-{year} {t}"
 
 def inject_current_year_in_raw_text(raw_text):
-    """Replace dd-mm with dd-mm-currentyear when year is missing in raw text."""
     current_year = str(datetime.now().year)
-    return re.sub(
-        r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})',
-        rf'\1-{current_year}',
-        raw_text
-    )
+    return re.sub(r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})', rf'\1-{current_year}', raw_text)
 
 # ================= GEMINI PARSER =================
 def parse_with_gemini(raw_text, max_retries=3, base_delay=1):
-    """Use the Google GenAI SDK to extract structured data with retry logic."""
     client = genai.Client(api_key=GEMINI_API_KEY)
-
     prompt = f"""
 Extract vehicle registration, DC number, start datetime (eway), and received datetime from the text below.
 Return ONLY a valid JSON array of objects with keys: "vehicle", "dc", "eway", "received".
@@ -139,10 +126,7 @@ JSON:
 """
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=prompt
-            )
+            response = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
             content = response.text
             content = re.sub(r'```json\s*', '', content)
             content = re.sub(r'```\s*$', '', content)
@@ -166,14 +150,11 @@ JSON:
             if "503" in error_str or "service unavailable" in error_str or "rate limit" in error_str or "429" in error_str:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    print(f"⚠️ Gemini API error (attempt {attempt+1}/{max_retries}): {e}. Retrying in {delay:.2f}s...")
                     time.sleep(delay)
                     continue
                 else:
-                    print(f"⚠️ Gemini API failed after {max_retries} attempts: {e}")
                     return []
             else:
-                print(f"⚠️ Gemini API error: {e}")
                 return []
 
 # ================= REGEX PARSER (FALLBACK) =================
@@ -282,63 +263,46 @@ def parse_with_regex(raw_text):
 
 # ================= PDF GENERATION HELPERS =================
 def calculate_data(start_time_str, end_dt_str):
-    """
-    Generates a timeline that starts at start_time_str and ends exactly at end_dt_str.
-    t1 is set to start_time + 2.5 hours + random 10-20 mins.
-    Returns (timestamps dict, balances dict).
-    """
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
-
     def _fallback_morning_end(base_dt):
         natural = base_dt + timedelta(minutes=sum(base_intervals))
         hh = random.randint(5, 8)
         mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
         return natural.replace(hour=hh, minute=mm, second=0, microsecond=0)
-
     def _in_morning_window(dt):
         if dt.hour < 5 or dt.hour > 8:
             return False
         if dt.hour == 8 and dt.minute > 50:
             return False
         return True
-
     base_intervals = [40, 1713, 1465, 611, 805, 550, 166, 33, 48, 27, 264, 733]
-
     try:
         end_datetime = datetime.strptime(end_dt_str, "%d-%m-%Y %H:%M:%S")
     except Exception:
         end_datetime = _fallback_morning_end(t1)
-
     if not _in_morning_window(end_datetime):
         hh = random.randint(5, 8)
         mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
         end_datetime = end_datetime.replace(hour=hh, minute=mm, second=0, microsecond=0)
-
     fixed_indices = {0, 7}
     adjustable_indices = [i for i in range(len(base_intervals)) if i not in fixed_indices]
-
     target_total = (end_datetime - t1).total_seconds() / 60.0
     fixed_total = sum(base_intervals[i] for i in fixed_indices)
     target_adjustable_total = int(round(target_total - fixed_total))
-
     base_adjustable = [base_intervals[i] for i in adjustable_indices]
     base_adjustable_total = sum(base_adjustable)
     delta = target_adjustable_total - base_adjustable_total
-
     weights = [pow(v, 1.12) for v in base_adjustable]
     weight_sum = sum(weights) if weights else 1.0
-
     float_adjusted = []
     for v, w in zip(base_adjustable, weights):
         share = delta * (w / weight_sum)
         var_span = 0.02 + 0.03 * (w / weight_sum) * len(base_adjustable)
         variation = random.uniform(1.0 - var_span, 1.0 + var_span)
         float_adjusted.append(max(1.0, v + share * variation))
-
     rounded = [max(1, int(round(x))) for x in float_adjusted]
     current_total = sum(rounded)
     remainder = target_adjustable_total - current_total
-
     if remainder != 0:
         fractions = [x - int(x) for x in float_adjusted]
         if remainder > 0:
@@ -356,11 +320,9 @@ def calculate_data(start_time_str, end_dt_str):
                 remainder -= step
             idx += 1
             guard += 1
-
     scaled_intervals = base_intervals[:]
     for pos, idx in enumerate(adjustable_indices):
         scaled_intervals[idx] = rounded[pos]
-
     pay2 = t1 + timedelta(minutes=scaled_intervals[0])
     t2   = pay2 + timedelta(minutes=scaled_intervals[1])
     t3   = t2 + timedelta(minutes=scaled_intervals[2])
@@ -373,13 +335,9 @@ def calculate_data(start_time_str, end_dt_str):
     t9   = t8 + timedelta(minutes=scaled_intervals[9])
     t10  = t9 + timedelta(minutes=scaled_intervals[10])
     t11  = t10 + timedelta(minutes=scaled_intervals[11])
-
-    ts = {
-        't1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
-        't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
-        't9': t9, 't10': t10, 't11': t11
-    }
-
+    ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
+          't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
+          't9': t9, 't10': t10, 't11': t11}
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS)
     while True:
@@ -388,15 +346,12 @@ def calculate_data(start_time_str, end_dt_str):
         p2_val = cr - p1_val
         if 4000 <= p2_val <= 4500:
             break
-    bal = {
-        'ob': ob, 'cr': cr, 'td': td,
-        'cl': round(ob + cr - td, 2),
-        'p1': p1_val, 'p2': p2_val
-    }
+    bal = {'ob': ob, 'cr': cr, 'td': td,
+           'cl': round(ob + cr - td, 2),
+           'p1': p1_val, 'p2': p2_val}
     return ts, bal
 
 def scrub_and_put(page, x0, y0, x1, y1, tx, ty, text, bold=False, right=False):
-    """White-out rectangle and place new text."""
     inset = 1.0
     if x1 - inset > x0 + inset and y1 - inset > y0 + inset:
         page.add_redact_annot(fitz.Rect(x0 + inset, y0 + inset, x1 - inset, y1 - inset), fill=(1, 1, 1))
@@ -409,7 +364,6 @@ def scrub_and_put(page, x0, y0, x1, y1, tx, ty, text, bold=False, right=False):
         page.insert_text((tx, ty + FONT_SIZE), text, fontsize=FONT_SIZE, fontname=font, color=TEXT_COLOR)
 
 def generate_pdf_to_path(template_doc, entry, output_path):
-    """Generate a PDF using the template and entry, save to output_path."""
     vehicle_no = entry["vehicle"]
     dc_number = entry["dc"]
     start_time = entry["eway"]
@@ -425,13 +379,11 @@ def generate_pdf_to_path(template_doc, entry, output_path):
 
     ts, bal = calculate_data(start_time, end_time)
 
-    # Header Table Background
     hx0, hy0, hx1, hy1 = COORD["header_rect"]
     page.draw_rect(fitz.Rect(hx0, hy0, hx1, hy1), color=None, fill=(1, 129/255, 57/255))
     page.insert_text((COORD["header_text"][0], COORD["header_text"][1] + FONT_SIZE),
                      f"{vehicle_no} - {tag_acct}", fontsize=FONT_SIZE, fontname="helvetica-bold", color=(0,0,0))
 
-    # Date/Time Rows
     dt_values = [ts['t11'], ts['t10'], ts['t9'], ts['t8'], ts['pay1'], ts['t7'], ts['t6'], ts['t5'], ts['t4'], ts['t3'], ts['t2'], ts['pay2'], ts['t1']]
     for i, dt in enumerate(dt_values):
         top = COORD["row_tops"][i]
@@ -441,7 +393,6 @@ def generate_pdf_to_path(template_doc, entry, output_path):
         scrub_and_put(page, dx0, top, dx1, bot, dx0, top, dt.strftime("%d-%m-%Y"))
         scrub_and_put(page, tx0, top, tx1, bot, tx0, top, dt.strftime("%H:%M:%S"))
 
-    # Balances & Payments
     scrub_and_put(page, *COORD["bal_ob_1"], f"{bal['ob']:.2f}", right=True)
     scrub_and_put(page, *COORD["bal_cr_1"], f"{bal['cr']:.2f}", right=True)
     scrub_and_put(page, *COORD["bal_db_1"], f"- {bal['td']:.2f}")
@@ -453,7 +404,6 @@ def generate_pdf_to_path(template_doc, entry, output_path):
     scrub_and_put(page, *COORD["pay_1"], f"{bal['p1']:,.2f}", right=True)
     scrub_and_put(page, *COORD["pay_2"], f"{bal['p2']:,.2f}", right=True)
 
-    # Personal Details
     scrub_and_put(page, *COORD["stmt_sd"], (ts['t11'] + timedelta(days=1)).strftime("%d/%m/%Y"))
     scrub_and_put(page, *COORD["stmt_t1"], ts['t1'].strftime("%d/%m/%Y"))
     scrub_and_put(page, *COORD["stmt_t11"], ts['t11'].strftime("%d/%m/%Y"))
@@ -488,10 +438,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 Processing your data with Gemini AI...")
 
     try:
-        # Normalize years (add current year if missing)
         normalized = inject_current_year_in_raw_text(user_input)
-
-        # Parse using Gemini (or fallback)
         if PARSER_MODE == "gemini":
             entries = parse_with_gemini(normalized)
         elif PARSER_MODE == "fallback":
@@ -507,11 +454,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
 
-        # Open template once
-        template_doc = fitz.open(INPUT_PDF)
+        template_doc = fitz.open("template.pdf")
         pdf_paths = []
 
-        # Create a temporary directory for this request
         with tempfile.TemporaryDirectory() as tmpdir:
             for entry in entries:
                 output_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
@@ -519,7 +464,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf_paths.append(output_path)
             template_doc.close()
 
-            # Send PDFs back
             if len(pdf_paths) == 1:
                 with open(pdf_paths[0], 'rb') as f:
                     await update.message.reply_document(
@@ -528,7 +472,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"✅ Generated for {entries[0]['vehicle']}"
                     )
             else:
-                # Create zip in memory
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for pdf_path in pdf_paths:
@@ -543,30 +486,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ An error occurred: {str(e)}")
 
-# ================= FLASK KEEP-ALIVE SERVER =================
-# This ensures Render's free tier keeps the bot alive
-flask_app = Flask('')
-
-@flask_app.route('/')
-def home():
-    return "Bot is alive!"
-
-def run_flask():
-    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
-
-# ================= MAIN =================
-if __name__ == '__main__':
-    # Start the Flask server for Render
-    keep_alive()
-
-    # Build and run the Telegram bot
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+# ================= FASTAPI WEBHOOK SETUP =================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await application.initialize()
+    webhook_url = f"{os.environ['RENDER_EXTERNAL_URL']}/webhook"
+    await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+    logger.info(f"Webhook set to {webhook_url}")
+    yield
+    await application.bot.delete_webhook()
+    await application.shutdown()
 
-    print("🤖 Bot is polling...")
-    application.run_polling()
+fastapi_app = FastAPI(lifespan=lifespan)
+
+@fastapi_app.post("/webhook")
+async def process_update(request: Request):
+    req = await request.json()
+    update = Update.de_json(req, application.bot)
+    await application.process_update(update)
+    return Response()
+
+@fastapi_app.get("/healthcheck")
+async def health():
+    return Response()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=port)
