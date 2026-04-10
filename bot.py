@@ -25,7 +25,7 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
 
 PARSER_MODE = "gemini"   # or "fallback"
 
-# Default customer details
+# Default customer details – edit these to change the fallback values
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
 DEFAULT_MOBILE      = "9826260443"
@@ -95,20 +95,25 @@ def inject_current_year_in_raw_text(raw_text):
     current_year = str(datetime.now().year)
     return re.sub(r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})', rf'\1-{current_year}', raw_text)
 
-# ================= GEMINI PARSER =================
+# ================= GEMINI PARSER (extracts all fields) =================
 def parse_with_gemini(raw_text, max_retries=3, base_delay=1):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-Extract vehicle registration, DC number, start datetime (eway), and received datetime from the text below.
-Return ONLY a valid JSON array of objects with keys: "vehicle", "dc", "eway", "received".
+Extract the following information from the text below. Return ONLY a valid JSON array of objects.
+Each object may have these keys: "vehicle", "dc", "eway", "received", "cust_name", "cust_id", "mobile", "tag_account".
+If a field is not present in the text, simply omit it from the JSON (do not include a null value).
 
 Rules:
 - vehicle: registration like "XX00XX0000". Extract only the number.
 - dc: a 2-4 digit number (standalone or after "DC-" / "DC:").
-- eway: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour).
-- received: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the end time, always the later date.
+- eway: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the start datetime.
+- received: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the end datetime.
+- cust_name: any name that appears after "Name:", "Customer:", "Customer Name:", etc.
+- cust_id: digits after "ID:", "Customer ID:", "Cust ID:", etc.
+- mobile: 10-digit phone number after "Mobile:", "Phone:", "Mob:", etc.
+- tag_account: digits after "Tag:", "Tag Account:", "Tag ID:", etc.
 
-Time conversion (be precise):
+Time conversion examples:
 - "1621pm" → "16:21:00"
 - "01:17pm" → "13:17:00"
 - "1516 hrs" → "15:16:00"
@@ -118,6 +123,7 @@ Time conversion (be precise):
 - "today @ 10:15 am" → use the date provided.
 
 If seconds are missing, add ":00". For "today", use the date mentioned in the text.
+If year is missing (e.g., "09-03"), assume current year.
 
 Text:
 {raw_text}
@@ -133,15 +139,17 @@ JSON:
             parsed = json.loads(content)
             if isinstance(parsed, list):
                 for entry in parsed:
-                    if isinstance(entry, dict):
-                        entry["eway"] = normalize_datetime_year(entry.get("eway"))
-                        entry["received"] = normalize_datetime_year(entry.get("received"))
+                    if "eway" in entry:
+                        entry["eway"] = normalize_datetime_year(entry["eway"])
+                    if "received" in entry:
+                        entry["received"] = normalize_datetime_year(entry["received"])
                 return parsed
             elif isinstance(parsed, dict) and "entries" in parsed:
                 for entry in parsed["entries"]:
-                    if isinstance(entry, dict):
-                        entry["eway"] = normalize_datetime_year(entry.get("eway"))
-                        entry["received"] = normalize_datetime_year(entry.get("received"))
+                    if "eway" in entry:
+                        entry["eway"] = normalize_datetime_year(entry["eway"])
+                    if "received" in entry:
+                        entry["received"] = normalize_datetime_year(entry["received"])
                 return parsed["entries"]
             else:
                 return []
@@ -157,7 +165,7 @@ JSON:
             else:
                 return []
 
-# ================= REGEX PARSER (FALLBACK) =================
+# ================= REGEX PARSER (fallback, no custom fields) =================
 def parse_time_string(time_str):
     time_str = time_str.strip().lower()
     time_str = re.sub(r'\s*(hrs|hr|hours)\s*$', '', time_str).strip()
@@ -253,12 +261,14 @@ def parse_with_regex(raw_text):
             continue
         parsed_time = parse_time_string(time_str)
         parsed_received = parse_time_string(received_time) if received_time else None
-        entries.append({
+        entry = {
             "vehicle": vehicle,
             "dc": dc,
             "eway": f"{date_str} {parsed_time}",
-            "received": f"{received_date} {parsed_received}" if received_date and parsed_received else None
-        })
+        }
+        if received_date and parsed_received:
+            entry["received"] = f"{received_date} {parsed_received}"
+        entries.append(entry)
     return entries
 
 # ================= PDF GENERATION HELPERS =================
@@ -367,7 +377,7 @@ def generate_pdf_to_path(template_doc, entry, output_path):
     vehicle_no = entry["vehicle"]
     dc_number = entry["dc"]
     start_time = entry["eway"]
-    end_time = entry.get("received")
+    end_time = entry.get("received")  # may be None, then calculate_data will fallback
     cust_name = entry.get("cust_name", DEFAULT_CUST_NAME)
     cust_id   = entry.get("cust_id", DEFAULT_CUST_ID)
     mobile    = entry.get("mobile", DEFAULT_MOBILE)
@@ -426,10 +436,10 @@ logger = logging.getLogger(__name__)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *PDF Generator Bot Ready!*\n\n"
-        "Send me raw trip data (like you'd paste into your script) and I'll extract vehicle numbers, DC numbers, and dates using Gemini AI, then generate the PDF statements.\n\n"
-        "Example:\n"
-        "`MP09HH4340\\nDC:482\\nReceived: 13-03\\nEway: 09-03 @10:36am`\n\n"
-        "I can handle multiple trips in one message.",
+        "Send me raw trip data. I'll extract vehicle, DC, dates, and optional customer details.\n\n"
+        "Example with custom details:\n"
+        "`MP09HH4340\\nDC:482\\nReceived: 13-03\\nEway: 09-03 @10:36am\\nName: VIPUL MITTAL\\nID: 11593956\\nMobile: 9826260443\\nTag: 21434130`\n\n"
+        "If you omit optional details, I'll use defaults.",
         parse_mode="Markdown"
     )
 
@@ -449,7 +459,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entries = parse_with_regex(normalized)
 
         if not entries:
-            await update.message.reply_text("❌ Could not extract any valid trip data from your message. Please check the format.")
+            await update.message.reply_text("❌ Could not extract any valid trip data. Please check the format.")
             return
 
         await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
