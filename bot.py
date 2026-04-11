@@ -279,7 +279,7 @@ JSON:
             time.sleep(2**attempt)
     return []
 
-# ================= TEMPLATE 2: IDFC_BANK =================
+# ================= TEMPLATE 2: IDFC_BANK (MULTI‑ENTRY SUPPORT) =================
 DEFAULT_CUSTOMER_NAME = "KULDEEP KUMAR YADAV"
 DEFAULT_MOBILE_IDFC   = "8743893682"
 DEFAULT_TRUCK_NUMBER  = "UP67AT1939"
@@ -410,12 +410,15 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     doc.close()
 
 def parse_idfc_data(raw_text, max_retries=3):
+    """Return a list of entries (array) – supports multiple trips."""
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-Extract from text. Return ONLY JSON object with keys: "start_time","received_time","dc","customer_name","mobile","truck_number","truck_owner","recharge_amount","opening_balance","toll_debits".
+Extract from the text. Return ONLY a JSON array of objects, each object may have keys:
+"start_time","received_time","dc","customer_name","mobile","truck_number","truck_owner","recharge_amount","opening_balance","toll_debits".
+
 Rules:
 - start_time: datetime "dd-mm-yyyy HH:MM:SS"
-- received_time: optional
+- received_time: optional, same format
 - dc: a 2-4 digit number (standalone or after "DC-" / "DC:")
 - customer_name: after "Name:"
 - mobile: 10 digits
@@ -423,10 +426,12 @@ Rules:
 - truck_owner: after "Owner:"
 - recharge_amount: number after "Recharge:"
 - opening_balance: number after "Opening balance:"
-- toll_debits: array of numbers
-Omit if missing.
+- toll_debits: array of numbers (optional)
+If a field is not present in a trip, omit it.
+
 Text:
 {raw_text}
+
 JSON:
 """
     for attempt in range(max_retries):
@@ -435,15 +440,25 @@ JSON:
             content = response.text
             content = re.sub(r'```json\s*', '', content)
             content = re.sub(r'```\s*$', '', content)
-            data = json.loads(content)
-            if "start_time" in data:
-                data["start_time"] = normalize_datetime_year(data["start_time"])
-            if "received_time" in data:
-                data["received_time"] = normalize_datetime_year(data["received_time"])
-            return data
+            parsed = json.loads(content)
+            if isinstance(parsed, list):
+                for entry in parsed:
+                    if "start_time" in entry:
+                        entry["start_time"] = normalize_datetime_year(entry["start_time"])
+                    if "received_time" in entry:
+                        entry["received_time"] = normalize_datetime_year(entry["received_time"])
+                return parsed
+            elif isinstance(parsed, dict):
+                # Single trip fallback
+                if "start_time" in parsed:
+                    parsed["start_time"] = normalize_datetime_year(parsed["start_time"])
+                if "received_time" in parsed:
+                    parsed["received_time"] = normalize_datetime_year(parsed["received_time"])
+                return [parsed]
+            return []
         except Exception:
             time.sleep(2**attempt)
-    return {}
+    return []
 
 # ================= TELEGRAM BOT =================
 logging.basicConfig(level=logging.INFO)
@@ -468,14 +483,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
             "✅ *BARODA_BANK* template selected.\n"
-            "Send your trip data (vehicle, DC, eway, received, etc.)",
+            "Send your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
             "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.)",
+            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
 
@@ -491,7 +506,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if template == "baroda":
             entries = parse_baroda_data(normalized)
             if not entries:
-                await update.message.reply_text("❌ Could not extract baroda data.")
+                await update.message.reply_text("❌ Could not extract any baroda trip data.")
                 return
             vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
             for entry in entries:
@@ -500,7 +515,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
                     return
                 if not entry.get("dc"):
-                    await update.message.reply_text("❌ Missing DC number. Please provide 'DC: ...'")
+                    await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
                     return
             template_doc = fitz.open("baroda_template.pdf")
             pdf_paths = []
@@ -521,22 +536,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     zip_buffer.seek(0)
                     await update.message.reply_document(document=zip_buffer, filename="statements.zip")
         else:  # idfc
-            data = parse_idfc_data(normalized)
-            if not data or "start_time" not in data:
-                await update.message.reply_text("❌ Could not extract start time. Please provide 'Start: ...'")
+            entries = parse_idfc_data(normalized)
+            if not entries:
+                await update.message.reply_text("❌ Could not extract any IDFC trip data.")
                 return
-            dc_number = data.get("dc")
-            if not dc_number:
-                await update.message.reply_text("❌ Could not extract DC number. Please provide 'DC: ...'")
-                return
+            for entry in entries:
+                if not entry.get("start_time"):
+                    await update.message.reply_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
+                    return
+                if not entry.get("dc"):
+                    await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
+                    return
             template_doc = fitz.open("idfc_template.pdf")
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                generate_idfc_pdf_to_path(template_doc, data, tmp.name)
-                output_filename = f"FT-{dc_number}.pdf"
-                with open(tmp.name, 'rb') as f:
-                    await update.message.reply_document(document=f, filename=output_filename)
-                os.unlink(tmp.name)
-            template_doc.close()
+            pdf_paths = []
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for entry in entries:
+                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                    generate_idfc_pdf_to_path(template_doc, entry, out_path)
+                    pdf_paths.append(out_path)
+                template_doc.close()
+                if len(pdf_paths) == 1:
+                    with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
+                else:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for p in pdf_paths:
+                            zipf.write(p, os.path.basename(p))
+                    zip_buffer.seek(0)
+                    await update.message.reply_document(document=zip_buffer, filename="statements.zip")
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)}")
