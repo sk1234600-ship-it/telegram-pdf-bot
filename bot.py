@@ -26,6 +26,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
+# ================= USER AUTHORISATION =================
+# Add the numeric Telegram user IDs of allowed users
+# Get your ID by messaging @userinfobot on Telegram
+ALLOWED_USERS = {
+    123456789,  # Replace with your own user ID
+    # Add other trusted user IDs here, separated by commas
+}
+
 # ================= COMMON HELPERS =================
 def add_current_year_if_missing(date_str):
     if not date_str:
@@ -339,13 +347,11 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
     page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
-    # Start offset: +2.5h + random 10-20 min
     base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
 
     if end_time_str:
-        # Scaling mode: use base intervals from no-scaling (without random)
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
         t1_str = T1.strftime("%d-%m-%Y %H:%M:%S")
@@ -362,7 +368,6 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
     else:
-        # No scaling: explicit random intervals as requested
         Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
         Fee = Recharge + timedelta(minutes=1)
         T2 = Fee + timedelta(minutes=24*60 + random.randint(10, 20))
@@ -499,11 +504,16 @@ JSON:
             time.sleep(2**attempt)
     return []
 
-# ================= TELEGRAM BOT =================
+# ================= TELEGRAM BOT HANDLERS (with whitelist) =================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("⛔ You are not authorised to use this bot.")
+        return
+
     keyboard = [
         [InlineKeyboardButton("🏦 BARODA_BANK", callback_data="baroda")],
         [InlineKeyboardButton("🚛 IDFC_BANK", callback_data="idfc")]
@@ -515,6 +525,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.callback_query.answer("⛔ Unauthorised", show_alert=True)
+        return
+
     query = update.callback_query
     await query.answer()
     choice = query.data
@@ -534,6 +549,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("⛔ You are not authorised to use this bot.")
+        return
+
     user_input = update.message.text
     template = context.user_data.get("template")
     if not template:
