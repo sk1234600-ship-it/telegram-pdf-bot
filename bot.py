@@ -580,14 +580,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
             "✅ *BARODA_BANK* template selected.\n"
-            "Send your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
+            "Send your trip data (vehicle, DC, eway, received, etc.). 🚛🚛🚛You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
             "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
+            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). 🚛🚛🚛You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
 
@@ -619,7 +619,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not entry.get("dc"):
                     await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
                     return
-            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
             template_doc = fitz.open("baroda_template.pdf")
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -650,7 +650,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not entry.get("dc"):
                     await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
                     return
-            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
             template_doc = fitz.open("idfc_template.pdf")
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
