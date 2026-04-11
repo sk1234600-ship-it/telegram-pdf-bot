@@ -151,6 +151,15 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
         scaled[idx] = rounded[pos]
     return scaled, target_end
 
+def random_morning_datetime(base_dt):
+    """Return a new datetime with the same date as base_dt but random time 05:00-09:40."""
+    hour = random.randint(5, 9)
+    if hour == 9:
+        minute = random.randint(0, 40)
+    else:
+        minute = random.randint(0, 59)
+    return base_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
 # ================= TEMPLATE 1: BARODA_BANK =================
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
@@ -208,7 +217,9 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
-        # No clamping – we accept the final time as computed (should be near the random target)
+        # If final time is outside morning window, replace with random morning time on the same date
+        if t11.hour > 9 or (t11.hour == 9 and t11.minute > 40) or t11.hour < 5:
+            t11 = random_morning_datetime(t11)
     else:
         # No scaling: explicit random intervals
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
@@ -396,7 +407,9 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=scaled[8])
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
-        # No clamping – accept the computed final time
+        # If final time is outside morning window, replace with random morning time
+        if T10.hour > 9 or (T10.hour == 9 and T10.minute > 40) or T10.hour < 5:
+            T10 = random_morning_datetime(T10)
     else:
         Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
         Fee = Recharge + timedelta(minutes=1)
