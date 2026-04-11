@@ -114,7 +114,6 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     return scaled
 
 # ================= TEMPLATE 1: BARODA_BANK =================
-# Defaults
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
 DEFAULT_MOBILE      = "9826260443"
@@ -249,7 +248,7 @@ def parse_baroda_data(raw_text, max_retries=3):
 Extract the following from the text. Return ONLY a JSON array of objects with keys: "vehicle","dc","eway","received","cust_name","cust_id","mobile","tag_account".
 Rules:
 - vehicle: full registration e.g. "MP09HH4381".
-- dc: 2-4 digit number.
+- dc: a 2-4 digit number (standalone or after "DC-" / "DC:").
 - eway: datetime "dd-mm-yyyy HH:MM:SS".
 - received: datetime (optional).
 - cust_name: after "Name:" etc.
@@ -415,10 +414,11 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
 def parse_idfc_data(raw_text, max_retries=3):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-Extract from text. Return ONLY JSON object with keys: "start_time","received_time","customer_name","mobile","truck_number","truck_owner","recharge_amount","opening_balance","toll_debits".
+Extract from text. Return ONLY JSON object with keys: "start_time","received_time","dc","customer_name","mobile","truck_number","truck_owner","recharge_amount","opening_balance","toll_debits".
 Rules:
 - start_time: datetime "dd-mm-yyyy HH:MM:SS"
 - received_time: optional
+- dc: a 2-4 digit number (standalone or after "DC-" / "DC:")
 - customer_name: after "Name:"
 - mobile: 10 digits
 - truck_number: like "UP67AT1939"
@@ -477,7 +477,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
             "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, received optional, customer details, recharge, etc.)",
+            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.)",
             parse_mode="Markdown"
         )
 
@@ -525,11 +525,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not data or "start_time" not in data:
                 await update.message.reply_text("❌ Could not extract start time. Please provide 'Start: ...'")
                 return
+            # Check for DC number
+            dc_number = data.get("dc")
+            if not dc_number:
+                await update.message.reply_text("❌ Could not extract DC number. Please provide 'DC: ...'")
+                return
             template_doc = fitz.open("idfc_template.pdf")
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 generate_idfc_pdf_to_path(template_doc, data, tmp.name)
+                output_filename = f"FT-{dc_number}.pdf"
                 with open(tmp.name, 'rb') as f:
-                    await update.message.reply_document(document=f, filename="IDFC_statement.pdf")
+                    await update.message.reply_document(document=f, filename=output_filename)
                 os.unlink(tmp.name)
             template_doc.close()
     except Exception as e:
