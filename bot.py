@@ -59,13 +59,22 @@ def normalize_datetime_year(dt_str):
         return f"{day}-{month}-{year} {t}"
     return s
 
+def random_morning_time():
+    """Return a random time string HH:MM:00 within 05:00 - 09:40."""
+    hour = random.randint(5, 9)
+    if hour == 9:
+        minute = random.randint(0, 40)
+    else:
+        minute = random.randint(0, 59)
+    return f"{hour:02d}:{minute:02d}:00"
+
 def normalize_received(received_str):
-    """If time missing, default to 08:00:00."""
+    """If time missing, append a random morning time (05:00-09:40)."""
     if not received_str:
         return None
     if re.search(r'\d{2}:\d{2}:\d{2}', received_str):
         return normalize_datetime_year(received_str)
-    return normalize_datetime_year(received_str.strip() + " 08:00:00")
+    return normalize_datetime_year(received_str.strip() + " " + random_morning_time())
 
 def inject_current_year_in_raw_text(raw_text):
     current_year = str(datetime.now().year)
@@ -75,7 +84,6 @@ def inject_current_year_in_raw_text(raw_text):
 def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
     t_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     
-    # Morning window: 05:00 to 09:40
     def in_morning_window(dt):
         return 5 <= dt.hour <= 9 and not (dt.hour == 9 and dt.minute > 40)
     
@@ -141,7 +149,17 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     scaled = base_intervals[:]
     for pos, idx in enumerate(adjustable_indices):
         scaled[idx] = rounded[pos]
-    return scaled, target_end   # return target_end for final correction
+    return scaled, target_end
+
+def enforce_morning_window(dt):
+    """If dt is outside 05:00-09:40, clamp to nearest boundary."""
+    if dt.hour < 5:
+        return dt.replace(hour=5, minute=0, second=0, microsecond=0)
+    if dt.hour > 9:
+        return dt.replace(hour=9, minute=40, second=0, microsecond=0)
+    if dt.hour == 9 and dt.minute > 40:
+        return dt.replace(hour=9, minute=40, second=0, microsecond=0)
+    return dt
 
 # ================= TEMPLATE 1: BARODA_BANK =================
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
@@ -185,7 +203,6 @@ def calculate_data_baroda(start_time_str, end_dt_str):
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
 
     if end_dt_str:
-        # Scaling mode
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
         fixed_indices = {0, 7}
         scaled, target_end = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
@@ -201,11 +218,8 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
-        # Final correction to exactly hit target_end
-        diff = (target_end - t11).total_seconds() / 60.0
-        if abs(diff) > 0.1:
-            scaled[-1] += int(round(diff))
-            t11 = t10 + timedelta(minutes=scaled[-1])
+        # Ensure final time is within morning window (no exact match needed)
+        t11 = enforce_morning_window(t11)
     else:
         # No scaling: explicit random intervals
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
@@ -220,11 +234,11 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
         t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
         t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
-
+        # No window enforcement for no-scaling case
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
-    # Balances (unchanged)
+    # Balances
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -394,11 +408,8 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=scaled[8])
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
-        # Final correction
-        diff = (target_end - T10).total_seconds() / 60.0
-        if abs(diff) > 0.1:
-            scaled[-1] += int(round(diff))
-            T10 = T9 + timedelta(minutes=scaled[-1])
+        # Ensure final time is within morning window
+        T10 = enforce_morning_window(T10)
     else:
         Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
         Fee = Recharge + timedelta(minutes=1)
@@ -411,7 +422,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=1*60 + random.randint(10, 20))
         T9 = T8 + timedelta(minutes=15 + random.randint(10, 20))
         T10 = T9 + timedelta(minutes=16*60 + random.randint(10, 20))
-
+        # No window enforcement for no-scaling case
     return {
         "T1": T1, "Recharge": Recharge, "Fee": Fee,
         "T2": T2, "T3": T3, "T4": T4, "T5": T5, "T6": T6,
@@ -569,14 +580,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
             "✅ *BARODA_BANK* template selected.\n"
-            "Send your trip data (vehicle, DC, eway, received, etc.). 🚛You can send multiple trips in one message.🚛",
+            "Send your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
             "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). 🚛You can send multiple trips in one message.🚛",
+            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
 
