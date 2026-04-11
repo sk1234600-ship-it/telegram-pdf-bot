@@ -279,7 +279,7 @@ JSON:
             time.sleep(2**attempt)
     return []
 
-# ================= TEMPLATE 2: IDFC_BANK (MULTI‑ENTRY SUPPORT) =================
+# ================= TEMPLATE 2: IDFC_BANK (MULTI‑ENTRY) =================
 DEFAULT_CUSTOMER_NAME = "KULDEEP KUMAR YADAV"
 DEFAULT_MOBILE_IDFC   = "8743893682"
 DEFAULT_TRUCK_NUMBER  = "UP67AT1939"
@@ -517,6 +517,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not entry.get("dc"):
                     await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
                     return
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
             template_doc = fitz.open("baroda_template.pdf")
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -547,6 +548,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not entry.get("dc"):
                     await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
                     return
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
             template_doc = fitz.open("idfc_template.pdf")
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
