@@ -11,8 +11,11 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes
+)
 import uvicorn
 import fitz
 from google import genai
@@ -21,20 +24,103 @@ from google import genai
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variables")
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
-PARSER_MODE = "gemini"   # or "fallback"
+# ================= COMMON HELPERS =================
+def add_current_year_if_missing(date_str):
+    if not date_str:
+        return date_str
+    s = date_str.strip()
+    if re.fullmatch(r'\d{2}-\d{2}-\d{4}', s):
+        return s
+    m = re.fullmatch(r'(\d{2})-(\d{2})', s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{datetime.now().year}"
+    return s
 
-# Default customer details – edit these to change the fallback values
+def normalize_datetime_year(dt_str):
+    if not dt_str:
+        return dt_str
+    s = dt_str.strip()
+    m = re.fullmatch(r'(\d{2})-(\d{2})(?:-(\d{4}))?\s+(\d{2}:\d{2}:\d{2})', s)
+    if m:
+        day, month, year, t = m.group(1), m.group(2), m.group(3), m.group(4)
+        if not year:
+            year = str(datetime.now().year)
+        return f"{day}-{month}-{year} {t}"
+    return s
+
+def inject_current_year_in_raw_text(raw_text):
+    current_year = str(datetime.now().year)
+    return re.sub(r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})', rf'\1-{current_year}', raw_text)
+
+# ================= UNIFIED TIME SCALING ENGINE =================
+def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
+    t_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    def in_morning_window(dt):
+        return 5 <= dt.hour <= 8 and not (dt.hour == 8 and dt.minute > 50)
+    def natural_morning_end(base_dt):
+        natural = base_dt + timedelta(minutes=sum(base_intervals))
+        hh = random.randint(5, 8)
+        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
+        return natural.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if end_time_str:
+        try:
+            target_end = datetime.strptime(end_time_str, "%d-%m-%Y %H:%M:%S")
+        except:
+            target_end = natural_morning_end(t_start)
+    else:
+        target_end = natural_morning_end(t_start)
+    if not in_morning_window(target_end):
+        hh = random.randint(5, 8)
+        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
+        target_end = target_end.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    total_target = (target_end - t_start).total_seconds() / 60.0
+    fixed_total = sum(base_intervals[i] for i in fixed_indices)
+    target_adjustable = int(round(total_target - fixed_total))
+    adjustable_indices = [i for i in range(len(base_intervals)) if i not in fixed_indices]
+    base_adjustable = [base_intervals[i] for i in adjustable_indices]
+    base_adjustable_total = sum(base_adjustable)
+    delta = target_adjustable - base_adjustable_total
+    weights = [pow(v, 1.12) for v in base_adjustable]
+    weight_sum = sum(weights) if weights else 1.0
+    float_adjusted = []
+    for v, w in zip(base_adjustable, weights):
+        share = delta * (w / weight_sum)
+        var_span = random_factor * (1 + (w / weight_sum) * len(base_adjustable))
+        variation = random.uniform(1.0 - var_span, 1.0 + var_span)
+        float_adjusted.append(max(1.0, v + share * variation))
+    rounded = [max(1, int(round(x))) for x in float_adjusted]
+    current_total = sum(rounded)
+    remainder = target_adjustable - current_total
+    if remainder != 0:
+        fractions = [x - int(x) for x in float_adjusted]
+        if remainder > 0:
+            order = sorted(range(len(rounded)), key=lambda k: (fractions[k], weights[k]), reverse=True)
+            step = 1
+        else:
+            order = sorted(range(len(rounded)), key=lambda k: (rounded[k] > 1, -fractions[k], -weights[k]), reverse=True)
+            step = -1
+        idx = 0
+        while remainder != 0:
+            j = order[idx % len(order)]
+            if step > 0 or (step < 0 and rounded[j] > 1):
+                rounded[j] += step
+                remainder -= step
+            idx += 1
+    scaled = base_intervals[:]
+    for pos, idx in enumerate(adjustable_indices):
+        scaled[idx] = rounded[pos]
+    return scaled
+
+# ================= TEMPLATE 1: BARODA_BANK =================
+# Defaults
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
 DEFAULT_MOBILE      = "9826260443"
 DEFAULT_TAG_ACCOUNT = "21434130"
-
-# ================= COLORS & METRICS =================
-TEXT_COLOR = (0, 0, 0)
+TEXT_COLOR = (0,0,0)
 FONT_SIZE = 8
-
 COORD = {
     "row_date_x_default": (22.0, 62.91),
     "row_time_x_default": (65.14, 96.27),
@@ -63,71 +149,116 @@ COORD = {
     "header_rect": (20.0, 329.5, 200.0, 341.0),
     "header_text": (21.0, 331.336),
 }
+TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
-TOLL_DEBITS = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
+def calculate_data_baroda(start_time_str, end_dt_str):
+    t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
+    base_intervals = [40, 1713, 1465, 611, 805, 550, 166, 33, 48, 27, 264, 733]
+    fixed_indices = {0,7}
+    scaled = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
+    pay2 = t1 + timedelta(minutes=scaled[0])
+    t2   = pay2 + timedelta(minutes=scaled[1])
+    t3   = t2 + timedelta(minutes=scaled[2])
+    t4   = t3 + timedelta(minutes=scaled[3])
+    t5   = t4 + timedelta(minutes=scaled[4])
+    t6   = t5 + timedelta(minutes=scaled[5])
+    t7   = t6 + timedelta(minutes=scaled[6])
+    pay1 = t7 + timedelta(minutes=scaled[7])
+    t8   = pay1 + timedelta(minutes=scaled[8])
+    t9   = t8 + timedelta(minutes=scaled[9])
+    t10  = t9 + timedelta(minutes=scaled[10])
+    t11  = t10 + timedelta(minutes=scaled[11])
+    ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
+          't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
+          't9': t9, 't10': t10, 't11': t11}
+    ob = float(random.choice(range(800, 1050, 5)))
+    td = sum(TOLL_DEBITS_BARODA)
+    while True:
+        cr = float(random.choice(range(5000, 5750, 50)))
+        p1_val = float(random.choice(range(1000, 1550, 50)))
+        p2_val = cr - p1_val
+        if 4000 <= p2_val <= 4500:
+            break
+    bal = {'ob': ob, 'cr': cr, 'td': td,
+           'cl': round(ob + cr - td, 2),
+           'p1': p1_val, 'p2': p2_val}
+    return ts, bal
 
-# ================= DATE NORMALIZATION =================
-def add_current_year_if_missing(date_str):
-    if not date_str:
-        return date_str
-    s = date_str.strip()
-    m_full = re.fullmatch(r'(\d{2})-(\d{2})-(\d{4})', s)
-    if m_full:
-        return s
-    m_short = re.fullmatch(r'(\d{2})-(\d{2})', s)
-    if m_short:
-        return f"{m_short.group(1)}-{m_short.group(2)}-{datetime.now().year}"
-    return s
+def scrub_and_put(page, x0, y0, x1, y1, tx, ty, text, bold=False, right=False):
+    inset = 1.0
+    if x1 - inset > x0 + inset and y1 - inset > y0 + inset:
+        page.add_redact_annot(fitz.Rect(x0 + inset, y0 + inset, x1 - inset, y1 - inset), fill=(1,1,1))
+        page.apply_redactions()
+    font = "helvetica-bold" if bold else "helvetica"
+    if right:
+        w = fitz.get_text_length(text, fontname=font, fontsize=FONT_SIZE)
+        page.insert_text((tx - w, ty + FONT_SIZE), text, fontsize=FONT_SIZE, fontname=font, color=TEXT_COLOR)
+    else:
+        page.insert_text((tx, ty + FONT_SIZE), text, fontsize=FONT_SIZE, fontname=font, color=TEXT_COLOR)
 
-def normalize_datetime_year(dt_str):
-    if not dt_str:
-        return dt_str
-    s = dt_str.strip()
-    m = re.fullmatch(r'(\d{2})-(\d{2})(?:-(\d{4}))?\s+(\d{2}:\d{2}:\d{2})', s)
-    if not m:
-        return s
-    day, month, year, t = m.group(1), m.group(2), m.group(3), m.group(4)
-    if not year:
-        year = str(datetime.now().year)
-    return f"{day}-{month}-{year} {t}"
+def generate_baroda_pdf_to_path(template_doc, entry, output_path):
+    vehicle_no = entry["vehicle"]
+    dc_number = entry["dc"]
+    start_time = entry["eway"]
+    end_time = entry.get("received")
+    cust_name = entry.get("cust_name", DEFAULT_CUST_NAME)
+    cust_id   = entry.get("cust_id", DEFAULT_CUST_ID)
+    mobile    = entry.get("mobile", DEFAULT_MOBILE)
+    tag_acct  = entry.get("tag_account", DEFAULT_TAG_ACCOUNT)
+    doc = fitz.open()
+    doc.insert_pdf(template_doc, from_page=0, to_page=0)
+    page = doc[0]
+    ts, bal = calculate_data_baroda(start_time, end_time)
+    hx0, hy0, hx1, hy1 = COORD["header_rect"]
+    page.draw_rect(fitz.Rect(hx0, hy0, hx1, hy1), color=None, fill=(1, 129/255, 57/255))
+    page.insert_text((COORD["header_text"][0], COORD["header_text"][1] + FONT_SIZE),
+                     f"{vehicle_no} - {tag_acct}", fontsize=FONT_SIZE, fontname="helvetica-bold", color=(0,0,0))
+    dt_values = [ts['t11'], ts['t10'], ts['t9'], ts['t8'], ts['pay1'], ts['t7'], ts['t6'], ts['t5'], ts['t4'], ts['t3'], ts['t2'], ts['pay2'], ts['t1']]
+    for i, dt in enumerate(dt_values):
+        top = COORD["row_tops"][i]
+        bot = top + 8.0
+        dx0, dx1 = COORD["row_date_x_last"] if i == 12 else COORD["row_date_x_default"]
+        tx0, tx1 = COORD["row_time_x_last"] if i == 12 else COORD["row_time_x_default"]
+        scrub_and_put(page, dx0, top, dx1, bot, dx0, top, dt.strftime("%d-%m-%Y"))
+        scrub_and_put(page, tx0, top, tx1, bot, tx0, top, dt.strftime("%H:%M:%S"))
+    scrub_and_put(page, *COORD["bal_ob_1"], f"{bal['ob']:.2f}", right=True)
+    scrub_and_put(page, *COORD["bal_cr_1"], f"{bal['cr']:.2f}", right=True)
+    scrub_and_put(page, *COORD["bal_db_1"], f"- {bal['td']:.2f}")
+    scrub_and_put(page, *COORD["bal_cl_1"], f"{bal['cl']:.2f}", right=True)
+    scrub_and_put(page, *COORD["bal_ob_2"], f"{bal['ob']:.2f}", right=True, bold=True)
+    scrub_and_put(page, *COORD["bal_cr_2"], f"{bal['cr']:.2f}", right=True, bold=True)
+    scrub_and_put(page, *COORD["bal_db_2"], f"- {bal['td']:.2f}", bold=True)
+    scrub_and_put(page, *COORD["bal_cl_2"], f"{bal['cl']:.2f}", right=True, bold=True)
+    scrub_and_put(page, *COORD["pay_1"], f"{bal['p1']:,.2f}", right=True)
+    scrub_and_put(page, *COORD["pay_2"], f"{bal['p2']:,.2f}", right=True)
+    scrub_and_put(page, *COORD["stmt_sd"], (ts['t11'] + timedelta(days=1)).strftime("%d/%m/%Y"))
+    scrub_and_put(page, *COORD["stmt_t1"], ts['t1'].strftime("%d/%m/%Y"))
+    scrub_and_put(page, *COORD["stmt_t11"], ts['t11'].strftime("%d/%m/%Y"))
+    scrub_and_put(page, *COORD["name_left"], cust_name)
+    scrub_and_put(page, *COORD["name_right"], f"{cust_name}, Morena,")
+    scrub_and_put(page, *COORD["cust_id"], cust_id)
+    scrub_and_put(page, *COORD["mobile"], mobile)
+    scrub_and_put(page, *COORD["tag_account"], tag_acct)
+    scrub_and_put(page, *COORD["vehicle_no"], vehicle_no)
+    doc.save(output_path, garbage=4, deflate=True, clean=True)
+    doc.close()
 
-def inject_current_year_in_raw_text(raw_text):
-    current_year = str(datetime.now().year)
-    return re.sub(r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})', rf'\1-{current_year}', raw_text)
-
-# ================= GEMINI PARSER (extracts all fields) =================
-def parse_with_gemini(raw_text, max_retries=3, base_delay=1):
+def parse_baroda_data(raw_text, max_retries=3):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-Extract the following information from the text below. Return ONLY a valid JSON array of objects.
-Each object may have these keys: "vehicle", "dc", "eway", "received", "cust_name", "cust_id", "mobile", "tag_account".
-If a field is not present in the text, simply omit it from the JSON (do not include a null value).
-
+Extract the following from the text. Return ONLY a JSON array of objects with keys: "vehicle","dc","eway","received","cust_name","cust_id","mobile","tag_account".
 Rules:
-- vehicle: full registration string, e.g., "MP09HH4381". Keep letters and digits. Do not remove any characters. Return the entire registration exactly as written.
-- dc: a 2-4 digit number (standalone or after "DC-" / "DC:").
-- eway: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the start datetime.
-- received: format exactly as "dd-mm-yyyy HH:MM:SS" (24-hour). This is the end datetime.
-- cust_name: any name that appears after "Name:", "Customer:", "Customer Name:", etc.
-- cust_id: digits after "ID:", "Customer ID:", "Cust ID:", etc.
-- mobile: 10-digit phone number after "Mobile:", "Phone:", "Mob:", etc.
-- tag_account: digits after "Tag:", "Tag Account:", "Tag ID:", etc.
-
-Time conversion examples:
-- "1621pm" → "16:21:00"
-- "01:17pm" → "13:17:00"
-- "1516 hrs" → "15:16:00"
-- "11:51 am" → "11:51:00"
-- "11:46 pm" → "23:46:00"
-- "at noon" → "12:00:00"
-- "today @ 10:15 am" → use the date provided.
-
-If seconds are missing, add ":00". For "today", use the date mentioned in the text.
-If year is missing (e.g., "09-03"), assume current year.
-
+- vehicle: full registration e.g. "MP09HH4381".
+- dc: 2-4 digit number.
+- eway: datetime "dd-mm-yyyy HH:MM:SS".
+- received: datetime (optional).
+- cust_name: after "Name:" etc.
+- cust_id: digits after "ID:".
+- mobile: 10 digits.
+- tag_account: digits after "Tag:".
+If missing, omit.
 Text:
 {raw_text}
-
 JSON:
 """
     for attempt in range(max_retries):
@@ -144,374 +275,274 @@ JSON:
                     if "received" in entry:
                         entry["received"] = normalize_datetime_year(entry["received"])
                 return parsed
-            elif isinstance(parsed, dict) and "entries" in parsed:
-                for entry in parsed["entries"]:
-                    if "eway" in entry:
-                        entry["eway"] = normalize_datetime_year(entry["eway"])
-                    if "received" in entry:
-                        entry["received"] = normalize_datetime_year(entry["received"])
-                return parsed["entries"]
-            else:
-                return []
-        except Exception as e:
-            error_str = str(e).lower()
-            if "503" in error_str or "service unavailable" in error_str or "rate limit" in error_str or "429" in error_str:
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    time.sleep(delay)
-                    continue
-                else:
-                    return []
-            else:
-                return []
+            return []
+        except Exception:
+            time.sleep(2**attempt)
+    return []
 
-# ================= REGEX PARSER (fallback, no custom fields) =================
-def parse_time_string(time_str):
-    time_str = time_str.strip().lower()
-    time_str = re.sub(r'\s*(hrs|hr|hours)\s*$', '', time_str).strip()
-    meridian = None
-    match = re.search(r'\s*(am|pm)$', time_str)
-    if match:
-        meridian = match.group(1)
-        time_str = re.sub(r'\s*(am|pm)$', '', time_str).strip()
-    if ':' in time_str:
-        parts = time_str.split(':')
-        hour = int(parts[0])
-        minute = int(parts[1])
-        second = int(parts[2]) if len(parts) > 2 else 0
+# ================= TEMPLATE 2: IDFC_BANK =================
+DEFAULT_CUSTOMER_NAME = "KULDEEP KUMAR YADAV"
+DEFAULT_MOBILE_IDFC   = "8743893682"
+DEFAULT_TRUCK_NUMBER  = "UP67AT1939"
+DEFAULT_TRUCK_OWNER   = "KULDEEP YADAV SINGH"
+DEFAULT_RECHARGE_AMOUNT = 6400
+DEFAULT_OPENING_BALANCE = 800
+DEFAULT_TOLL_DEBITS = [720, 815, 480, 410, 260, 515, 85, 340, 335, 250]
+
+# Drawing constants for IDFC
+DATE_COLOR = (0.15, 0.15, 0.15)
+TIME_COLOR = (0.48, 0.48, 0.48)
+ROW_BG_ODD  = (1.0, 1.0, 1.0)
+ROW_BG_EVEN = (0.953, 0.953, 0.953)
+COL_PROC  = (36.8, 94.4)
+COL_TXN   = (96.4, 154.0)
+COL_CB    = (252.4, 305.4)
+COL_AMT   = (197.4, 250.4)
+CX_PROC = 65.8
+CX_TXN  = 125.5
+CX_AMT  = 224.1
+CX_CB   = 279.1
+
+def fmt_date(dt): return dt.strftime("%d %b %y")
+def fmt_time(dt): return dt.strftime("%I:%M %p")
+def fmt_bal(v):   return f"{int(v):,}"
+
+def clear_idfc(page, x1, y1, x2, y2, fill):
+    page.add_redact_annot(fitz.Rect(x1, y1, x2, y2), fill=fill)
+    page.apply_redactions()
+
+def put_centered_idfc(page, cx, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False):
+    font = "Helvetica-Bold" if bold else "Helvetica"
+    w = fitz.get_text_length(str(text), fontname=font, fontsize=size)
+    page.insert_text((cx - w/2, y), str(text), fontsize=size, color=color, fontname=font)
+
+def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False):
+    font = "Helvetica-Bold" if bold else "Helvetica"
+    page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
+
+def calculate_timeline_idfc(start_time_str, end_time_str=None):
+    base_intervals = [71, 1, 1368, 900, 150, 120, 240, 150, 60, 15, 960]
+    fixed_indices = {0,1}
+    if end_time_str:
+        scaled = scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices)
     else:
-        if len(time_str) == 4 and time_str.isdigit():
-            hour = int(time_str[:2])
-            minute = int(time_str[2:])
-            second = 0
-        elif len(time_str) == 3 and time_str.isdigit():
-            hour = int(time_str[0])
-            minute = int(time_str[1:])
-            second = 0
-        else:
-            return "00:00:00"
-    if meridian:
-        if 1 <= hour <= 12:
-            if meridian == 'pm' and hour != 12:
-                hour += 12
-            elif meridian == 'am' and hour == 12:
-                hour = 0
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return "00:00:00"
-    return f"{hour:02d}:{minute:02d}:{second:02d}"
+        scaled = base_intervals[:]
+    T1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    Recharge = T1 + timedelta(minutes=scaled[0])
+    Fee = Recharge + timedelta(minutes=scaled[1])
+    T2 = Fee + timedelta(minutes=scaled[2])
+    T3 = T2 + timedelta(minutes=scaled[3])
+    T4 = T3 + timedelta(minutes=scaled[4])
+    T5 = T4 + timedelta(minutes=scaled[5])
+    T6 = T5 + timedelta(minutes=scaled[6])
+    T7 = T6 + timedelta(minutes=scaled[7])
+    T8 = T7 + timedelta(minutes=scaled[8])
+    T9 = T8 + timedelta(minutes=scaled[9])
+    T10 = T9 + timedelta(minutes=scaled[10])
+    return {"T1":T1, "Recharge":Recharge, "Fee":Fee, "T2":T2, "T3":T3, "T4":T4,
+            "T5":T5, "T6":T6, "T7":T7, "T8":T8, "T9":T9, "T10":T10}
 
-def parse_with_regex(raw_text):
-    entries = []
-    blocks = re.split(r'\n\s*\n', raw_text.strip())
-    for block in blocks:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if not lines:
-            continue
-        vehicle = None
-        vehicle_pattern = r'([A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4})'
-        for i, line in enumerate(lines):
-            match = re.search(vehicle_pattern, line.upper())
-            if match:
-                vehicle = match.group(1)
-                lines[i] = re.sub(vehicle_pattern, '', line, flags=re.IGNORECASE).strip()
-                if not lines[i]:
-                    del lines[i]
-                break
-        if not vehicle:
-            continue
-        dc = None
-        for i, line in enumerate(lines[:]):
-            if re.match(r'^\d{2,4}$', line):
-                dc = line
-                del lines[i]
-                break
-            match = re.search(r'(?:DC[:\-\s]*)?(\d{2,4})', line, re.IGNORECASE)
-            if match:
-                dc = match.group(1)
-                lines[i] = re.sub(r'DC[:\-\s]*\d{2,4}', '', line, flags=re.IGNORECASE).strip()
-                if not lines[i]:
-                    del lines[i]
-                break
-        if not dc:
-            continue
-        date_str = None
-        time_str = None
-        received_date = None
-        received_time = None
-        for i, line in enumerate(lines):
-            if "received" in line.lower():
-                date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
-                if date_match:
-                    received_date = add_current_year_if_missing(date_match.group(1))
-                time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
-                if time_match:
-                    received_time = time_match.group(1).strip()
-                elif i+1 < len(lines) and re.search(r'^\d', lines[i+1]):
-                    received_time = lines[i+1].strip()
-            else:
-                date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
-                if date_match:
-                    date_str = add_current_year_if_missing(date_match.group(1))
-                    time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
-                    if time_match:
-                        time_str = time_match.group(1).strip()
-                    elif i+1 < len(lines) and re.search(r'^\d', lines[i+1]):
-                        time_str = lines[i+1].strip()
-        if not date_str or not time_str:
-            continue
-        parsed_time = parse_time_string(time_str)
-        parsed_received = parse_time_string(received_time) if received_time else None
-        entry = {
-            "vehicle": vehicle,
-            "dc": dc,
-            "eway": f"{date_str} {parsed_time}",
-        }
-        if received_date and parsed_received:
-            entry["received"] = f"{received_date} {parsed_received}"
-        entries.append(entry)
-    return entries
+def draw_idfc_row(page, i, k, y, times, txn_times, balances, recharge_amount):
+    row_bg = ROW_BG_ODD if (i % 2 == 0) else ROW_BG_EVEN
+    clear_idfc(page, COL_PROC[0], y+1, COL_PROC[1], y+27, fill=row_bg)
+    clear_idfc(page, COL_TXN[0],  y+1, COL_TXN[1],  y+27, fill=row_bg)
+    clear_idfc(page, COL_CB[0],   y+1, COL_CB[1],   y+27, fill=row_bg)
+    put_centered_idfc(page, CX_PROC, y+9.8,  fmt_date(times[k]), 9.0, DATE_COLOR)
+    put_centered_idfc(page, CX_PROC, y+23.3, fmt_time(times[k]), 9.0, TIME_COLOR)
+    put_centered_idfc(page, CX_TXN,  y+9.8,  fmt_date(txn_times[k]), 9.0, DATE_COLOR)
+    put_centered_idfc(page, CX_TXN,  y+23.3, fmt_time(txn_times[k]), 9.0, TIME_COLOR)
+    if k == "Recharge":
+        clear_idfc(page, COL_AMT[0], y+1, COL_AMT[1], y+27, fill=row_bg)
+        put_centered_idfc(page, CX_AMT, y+14.255, fmt_bal(recharge_amount), 8.8)
+    put_centered_idfc(page, CX_CB, y+14.255, fmt_bal(balances[i]), 8.8)
 
-# ================= PDF GENERATION HELPERS =================
-def calculate_data(start_time_str, end_dt_str):
-    t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
-    def _fallback_morning_end(base_dt):
-        natural = base_dt + timedelta(minutes=sum(base_intervals))
-        hh = random.randint(5, 8)
-        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
-        return natural.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    def _in_morning_window(dt):
-        if dt.hour < 5 or dt.hour > 8:
-            return False
-        if dt.hour == 8 and dt.minute > 50:
-            return False
-        return True
-    base_intervals = [40, 1713, 1465, 611, 805, 550, 166, 33, 48, 27, 264, 733]
-    try:
-        end_datetime = datetime.strptime(end_dt_str, "%d-%m-%Y %H:%M:%S")
-    except Exception:
-        end_datetime = _fallback_morning_end(t1)
-    if not _in_morning_window(end_datetime):
-        hh = random.randint(5, 8)
-        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
-        end_datetime = end_datetime.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    fixed_indices = {0, 7}
-    adjustable_indices = [i for i in range(len(base_intervals)) if i not in fixed_indices]
-    target_total = (end_datetime - t1).total_seconds() / 60.0
-    fixed_total = sum(base_intervals[i] for i in fixed_indices)
-    target_adjustable_total = int(round(target_total - fixed_total))
-    base_adjustable = [base_intervals[i] for i in adjustable_indices]
-    base_adjustable_total = sum(base_adjustable)
-    delta = target_adjustable_total - base_adjustable_total
-    weights = [pow(v, 1.12) for v in base_adjustable]
-    weight_sum = sum(weights) if weights else 1.0
-    float_adjusted = []
-    for v, w in zip(base_adjustable, weights):
-        share = delta * (w / weight_sum)
-        var_span = 0.02 + 0.03 * (w / weight_sum) * len(base_adjustable)
-        variation = random.uniform(1.0 - var_span, 1.0 + var_span)
-        float_adjusted.append(max(1.0, v + share * variation))
-    rounded = [max(1, int(round(x))) for x in float_adjusted]
-    current_total = sum(rounded)
-    remainder = target_adjustable_total - current_total
-    if remainder != 0:
-        fractions = [x - int(x) for x in float_adjusted]
-        if remainder > 0:
-            order = sorted(range(len(rounded)), key=lambda k: (fractions[k], weights[k]), reverse=True)
-            step = 1
+def generate_idfc_pdf_to_path(template_doc, entry, output_path):
+    start_time = entry["start_time"]
+    end_time = entry.get("received_time")
+    times = calculate_timeline_idfc(start_time, end_time)
+    txn_times = {k: v + timedelta(minutes=2) for k, v in times.items()}
+    cust_name = entry.get("customer_name", DEFAULT_CUSTOMER_NAME)
+    mobile    = entry.get("mobile", DEFAULT_MOBILE_IDFC)
+    truck_no  = entry.get("truck_number", DEFAULT_TRUCK_NUMBER)
+    owner     = entry.get("truck_owner", DEFAULT_TRUCK_OWNER)
+    recharge  = entry.get("recharge_amount", DEFAULT_RECHARGE_AMOUNT)
+    opening   = entry.get("opening_balance", DEFAULT_OPENING_BALANCE)
+    tolls     = entry.get("toll_debits", DEFAULT_TOLL_DEBITS)
+    # Compute balances
+    bal = opening
+    balances = []
+    idx = 0
+    for i in range(12):
+        if i == 1:
+            bal += recharge
+        elif i == 2:
+            bal -= 29
         else:
-            order = sorted(range(len(rounded)), key=lambda k: (rounded[k] > 1, -fractions[k], -weights[k]), reverse=True)
-            step = -1
-        idx = 0
-        guard = 0
-        while remainder != 0 and guard < 100000:
-            j = order[idx % len(order)]
-            if step > 0 or (step < 0 and rounded[j] > 1):
-                rounded[j] += step
-                remainder -= step
+            bal -= tolls[idx]
             idx += 1
-            guard += 1
-    scaled_intervals = base_intervals[:]
-    for pos, idx in enumerate(adjustable_indices):
-        scaled_intervals[idx] = rounded[pos]
-    pay2 = t1 + timedelta(minutes=scaled_intervals[0])
-    t2   = pay2 + timedelta(minutes=scaled_intervals[1])
-    t3   = t2 + timedelta(minutes=scaled_intervals[2])
-    t4   = t3 + timedelta(minutes=scaled_intervals[3])
-    t5   = t4 + timedelta(minutes=scaled_intervals[4])
-    t6   = t5 + timedelta(minutes=scaled_intervals[5])
-    t7   = t6 + timedelta(minutes=scaled_intervals[6])
-    pay1 = t7 + timedelta(minutes=scaled_intervals[7])
-    t8   = pay1 + timedelta(minutes=scaled_intervals[8])
-    t9   = t8 + timedelta(minutes=scaled_intervals[9])
-    t10  = t9 + timedelta(minutes=scaled_intervals[10])
-    t11  = t10 + timedelta(minutes=scaled_intervals[11])
-    ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
-          't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
-          't9': t9, 't10': t10, 't11': t11}
-    ob = float(random.choice(range(800, 1050, 5)))
-    td = sum(TOLL_DEBITS)
-    while True:
-        cr = float(random.choice(range(5000, 5750, 50)))
-        p1_val = float(random.choice(range(1000, 1550, 50)))
-        p2_val = cr - p1_val
-        if 4000 <= p2_val <= 4500:
-            break
-    bal = {'ob': ob, 'cr': cr, 'td': td,
-           'cl': round(ob + cr - td, 2),
-           'p1': p1_val, 'p2': p2_val}
-    return ts, bal
-
-def scrub_and_put(page, x0, y0, x1, y1, tx, ty, text, bold=False, right=False):
-    inset = 1.0
-    if x1 - inset > x0 + inset and y1 - inset > y0 + inset:
-        page.add_redact_annot(fitz.Rect(x0 + inset, y0 + inset, x1 - inset, y1 - inset), fill=(1, 1, 1))
-        page.apply_redactions()
-    font = "helvetica-bold" if bold else "helvetica"
-    if right:
-        w = fitz.get_text_length(text, fontname=font, fontsize=FONT_SIZE)
-        page.insert_text((tx - w, ty + FONT_SIZE), text, fontsize=FONT_SIZE, fontname=font, color=TEXT_COLOR)
-    else:
-        page.insert_text((tx, ty + FONT_SIZE), text, fontsize=FONT_SIZE, fontname=font, color=TEXT_COLOR)
-
-def generate_pdf_to_path(template_doc, entry, output_path):
-    vehicle_no = entry["vehicle"]
-    dc_number = entry["dc"]
-    start_time = entry["eway"]
-    end_time = entry.get("received")  # may be None, then calculate_data will fallback
-    cust_name = entry.get("cust_name", DEFAULT_CUST_NAME)
-    cust_id   = entry.get("cust_id", DEFAULT_CUST_ID)
-    mobile    = entry.get("mobile", DEFAULT_MOBILE)
-    tag_acct  = entry.get("tag_account", DEFAULT_TAG_ACCOUNT)
-
+        balances.append(bal)
     doc = fitz.open()
-    doc.insert_pdf(template_doc, from_page=0, to_page=0)
+    doc.insert_pdf(template_doc, from_page=0, to_page=template_doc.page_count-1)
     page = doc[0]
-
-    ts, bal = calculate_data(start_time, end_time)
-
-    hx0, hy0, hx1, hy1 = COORD["header_rect"]
-    page.draw_rect(fitz.Rect(hx0, hy0, hx1, hy1), color=None, fill=(1, 129/255, 57/255))
-    page.insert_text((COORD["header_text"][0], COORD["header_text"][1] + FONT_SIZE),
-                     f"{vehicle_no} - {tag_acct}", fontsize=FONT_SIZE, fontname="helvetica-bold", color=(0,0,0))
-
-    dt_values = [ts['t11'], ts['t10'], ts['t9'], ts['t8'], ts['pay1'], ts['t7'], ts['t6'], ts['t5'], ts['t4'], ts['t3'], ts['t2'], ts['pay2'], ts['t1']]
-    for i, dt in enumerate(dt_values):
-        top = COORD["row_tops"][i]
-        bot = top + 8.0
-        dx0, dx1 = COORD["row_date_x_last"] if i == 12 else COORD["row_date_x_default"]
-        tx0, tx1 = COORD["row_time_x_last"] if i == 12 else COORD["row_time_x_default"]
-        scrub_and_put(page, dx0, top, dx1, bot, dx0, top, dt.strftime("%d-%m-%Y"))
-        scrub_and_put(page, tx0, top, tx1, bot, tx0, top, dt.strftime("%H:%M:%S"))
-
-    scrub_and_put(page, *COORD["bal_ob_1"], f"{bal['ob']:.2f}", right=True)
-    scrub_and_put(page, *COORD["bal_cr_1"], f"{bal['cr']:.2f}", right=True)
-    scrub_and_put(page, *COORD["bal_db_1"], f"- {bal['td']:.2f}")
-    scrub_and_put(page, *COORD["bal_cl_1"], f"{bal['cl']:.2f}", right=True)
-    scrub_and_put(page, *COORD["bal_ob_2"], f"{bal['ob']:.2f}", right=True, bold=True)
-    scrub_and_put(page, *COORD["bal_cr_2"], f"{bal['cr']:.2f}", right=True, bold=True)
-    scrub_and_put(page, *COORD["bal_db_2"], f"- {bal['td']:.2f}", bold=True)
-    scrub_and_put(page, *COORD["bal_cl_2"], f"{bal['cl']:.2f}", right=True, bold=True)
-    scrub_and_put(page, *COORD["pay_1"], f"{bal['p1']:,.2f}", right=True)
-    scrub_and_put(page, *COORD["pay_2"], f"{bal['p2']:,.2f}", right=True)
-
-    scrub_and_put(page, *COORD["stmt_sd"], (ts['t11'] + timedelta(days=1)).strftime("%d/%m/%Y"))
-    scrub_and_put(page, *COORD["stmt_t1"], ts['t1'].strftime("%d/%m/%Y"))
-    scrub_and_put(page, *COORD["stmt_t11"], ts['t11'].strftime("%d/%m/%Y"))
-    scrub_and_put(page, *COORD["name_left"], cust_name)
-    scrub_and_put(page, *COORD["name_right"], f"{cust_name}, Morena,")
-    scrub_and_put(page, *COORD["cust_id"], cust_id)
-    scrub_and_put(page, *COORD["mobile"], mobile)
-    scrub_and_put(page, *COORD["tag_account"], tag_acct)
-    scrub_and_put(page, *COORD["vehicle_no"], vehicle_no)
-
-    now_str = datetime.now().strftime("D:%Y%m%d%H%M%S")
-    doc.set_metadata({"creationDate": now_str, "modDate": now_str})
+    clear_idfc(page, 145, 88, 350, 180, fill=(1,1,1))
+    put_text_idfc(page, 147, 100.935, cust_name, 10.6, TEXT_COLOR, bold=True)
+    put_text_idfc(page, 147, 124.935, mobile, 10.6, TEXT_COLOR, bold=True)
+    put_text_idfc(page, 147, 148.935, truck_no, 10.6, TEXT_COLOR, bold=True)
+    put_text_idfc(page, 147, 172.935, owner, 10.6, TEXT_COLOR, bold=True)
+    clear_idfc(page, 145, 184, 350, 205, fill=(1,1,1))
+    put_text_idfc(page, 147, 196.935,
+                  f"{times['T1'].strftime('%d %B %y')} - {times['T10'].strftime('%d %B %y')}",
+                  10.6, TEXT_COLOR, bold=True)
+    clear_idfc(page, 150, 260, 190, 280, fill=(1,1,1))
+    put_text_idfc(page, 152.8, 276, fmt_bal(recharge), 10.6)
+    keys = ["T1","Recharge","Fee","T2","T3","T4","T5","T6","T7","T8","T9"]
+    for i, k in enumerate(keys):
+        draw_idfc_row(page, i, k, 344.3 + i*40.0, times, txn_times, balances, recharge)
+    if doc.page_count > 1:
+        p2 = doc[1]
+        y = 44.8
+        clear_idfc(p2, COL_PROC[0], y+1, COL_PROC[1], y+27, fill=ROW_BG_EVEN)
+        clear_idfc(p2, COL_TXN[0], y+1, COL_TXN[1], y+27, fill=ROW_BG_EVEN)
+        clear_idfc(p2, COL_CB[0],  y+1, COL_CB[1],  y+27, fill=ROW_BG_EVEN)
+        put_centered_idfc(p2, CX_PROC, y+9.8,  fmt_date(times["T10"]), 9.0, DATE_COLOR)
+        put_centered_idfc(p2, CX_PROC, y+23.3, fmt_time(times["T10"]), 9.0, TIME_COLOR)
+        put_centered_idfc(p2, CX_TXN,  y+9.8,  fmt_date(txn_times["T10"]), 9.0, DATE_COLOR)
+        put_centered_idfc(p2, CX_TXN,  y+23.3, fmt_time(txn_times["T10"]), 9.0, TIME_COLOR)
+        put_centered_idfc(p2, CX_CB,   y+14.255, fmt_bal(balances[11]), 8.8)
     doc.save(output_path, garbage=4, deflate=True, clean=True)
     doc.close()
 
-# ================= TELEGRAM BOT HANDLERS =================
+def parse_idfc_data(raw_text, max_retries=3):
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"""
+Extract from text. Return ONLY JSON object with keys: "start_time","received_time","customer_name","mobile","truck_number","truck_owner","recharge_amount","opening_balance","toll_debits".
+Rules:
+- start_time: datetime "dd-mm-yyyy HH:MM:SS"
+- received_time: optional
+- customer_name: after "Name:"
+- mobile: 10 digits
+- truck_number: like "UP67AT1939"
+- truck_owner: after "Owner:"
+- recharge_amount: number after "Recharge:"
+- opening_balance: number after "Opening balance:"
+- toll_debits: array of numbers
+Omit if missing.
+Text:
+{raw_text}
+JSON:
+"""
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+            content = response.text
+            content = re.sub(r'```json\s*', '', content)
+            content = re.sub(r'```\s*$', '', content)
+            data = json.loads(content)
+            if "start_time" in data:
+                data["start_time"] = normalize_datetime_year(data["start_time"])
+            if "received_time" in data:
+                data["received_time"] = normalize_datetime_year(data["received_time"])
+            return data
+        except Exception:
+            time.sleep(2**attempt)
+    return {}
+
+# ================= TELEGRAM BOT =================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🏦 BARODA_BANK", callback_data="baroda")],
+        [InlineKeyboardButton("🚛 IDFC_BANK", callback_data="idfc")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 *PDF Generator Bot Ready!*\n\n"
-        "⚡⚡Send me raw trip data. I'll extract vehicle, DC, dates, and optional customer details.⚡⚡\n\n"
-        "✅Example with custom details:\n"
-        "✅`MP09HH4340\\nDC:482\\nReceived: 13-03\\nEway: 09-03 @10:36am\\nName: VIPUL MITTAL\\nID: 11593956\\nMobile: 9826260443\\nTag: 21434130`\n\n"
-        "⚠️If you omit optional details, I'll use defaults.",
-        parse_mode="Markdown"
+        "Welcome! Please choose your bank template:",
+        reply_markup=reply_markup
     )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
+    if choice == "baroda":
+        context.user_data["template"] = "baroda"
+        await query.edit_message_text(
+            "✅ *BARODA_BANK* template selected.\n"
+            "Send your trip data (vehicle, DC, eway, received, etc.)",
+            parse_mode="Markdown"
+        )
+    elif choice == "idfc":
+        context.user_data["template"] = "idfc"
+        await query.edit_message_text(
+            "✅ *IDFC_BANK* template selected.\n"
+            "Send your trip data (start time, received optional, customer details, recharge, etc.)",
+            parse_mode="Markdown"
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
+    template = context.user_data.get("template")
+    if not template:
+        await update.message.reply_text("Please choose a template first using /start")
+        return
     await update.message.reply_text("📄 Processing your data with Gemini AI...")
-
     try:
         normalized = inject_current_year_in_raw_text(user_input)
-        if PARSER_MODE == "gemini":
-            entries = parse_with_gemini(normalized)
-        elif PARSER_MODE == "fallback":
-            entries = parse_with_gemini(normalized)
+        if template == "baroda":
+            entries = parse_baroda_data(normalized)
             if not entries:
-                entries = parse_with_regex(normalized)
-        else:
-            entries = parse_with_regex(normalized)
-
-        if not entries:
-            await update.message.reply_text("❌ Could not extract any valid trip data. Please check the format.")
-            return
-
-        # Validate vehicle numbers (must match full registration pattern)
-        vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
-        for entry in entries:
-            vehicle = entry.get("vehicle", "")
-            if not vehicle_pattern.match(vehicle):
-                await update.message.reply_text(
-                    f"❌ Invalid vehicle number: '{vehicle}'. Please provide full registration like MP09HH4381."
-                )
+                await update.message.reply_text("❌ Could not extract baroda data.")
                 return
-
-        await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...")
-
-        template_doc = fitz.open("template.pdf")
-        pdf_paths = []
-
-        with tempfile.TemporaryDirectory() as tmpdir:
+            # Validate vehicle
+            vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
             for entry in entries:
-                output_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                generate_pdf_to_path(template_doc, entry, output_path)
-                pdf_paths.append(output_path)
+                vehicle = entry.get("vehicle", "")
+                if not vehicle_pattern.match(vehicle):
+                    await update.message.reply_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
+                    return
+            template_doc = fitz.open("baroda_template.pdf")
+            pdf_paths = []
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for entry in entries:
+                    out_path = os.path.join(tmpdir, f"BARODA-{entry['dc']}.pdf")
+                    generate_baroda_pdf_to_path(template_doc, entry, out_path)
+                    pdf_paths.append(out_path)
+                template_doc.close()
+                if len(pdf_paths) == 1:
+                    with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
+                else:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for p in pdf_paths:
+                            zipf.write(p, os.path.basename(p))
+                    zip_buffer.seek(0)
+                    await update.message.reply_document(document=zip_buffer, filename="statements.zip")
+        else:  # idfc
+            data = parse_idfc_data(normalized)
+            if not data or "start_time" not in data:
+                await update.message.reply_text("❌ Could not extract start time. Please provide 'Start: ...'")
+                return
+            template_doc = fitz.open("idfc_template.pdf")
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                generate_idfc_pdf_to_path(template_doc, data, tmp.name)
+                with open(tmp.name, 'rb') as f:
+                    await update.message.reply_document(document=f, filename="IDFC_statement.pdf")
+                os.unlink(tmp.name)
             template_doc.close()
-
-            if len(pdf_paths) == 1:
-                with open(pdf_paths[0], 'rb') as f:
-                    await update.message.reply_document(
-                        document=f,
-                        filename=os.path.basename(pdf_paths[0]),
-                        caption=f"✅ Generated for {entries[0]['vehicle']}"
-                    )
-            else:
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for pdf_path in pdf_paths:
-                        zipf.write(pdf_path, os.path.basename(pdf_path))
-                zip_buffer.seek(0)
-                await update.message.reply_document(
-                    document=zip_buffer,
-                    filename="statements.zip",
-                    caption=f"✅ {len(pdf_paths)} PDFs generated"
-                )
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ An error occurred: {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
-# ================= FASTAPI WEBHOOK SETUP =================
+# ================= FASTAPI WEBHOOK =================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await application.initialize()
     webhook_url = f"{os.environ['RENDER_EXTERNAL_URL']}/webhook"
