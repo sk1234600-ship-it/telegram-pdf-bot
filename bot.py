@@ -279,7 +279,7 @@ JSON:
             time.sleep(2**attempt)
     return []
 
-# ================= TEMPLATE 2: IDFC_BANK (MULTI‑ENTRY) =================
+# ================= TEMPLATE 2: IDFC_BANK (with offset) =================
 DEFAULT_CUSTOMER_NAME = "KULDEEP KUMAR YADAV"
 DEFAULT_MOBILE_IDFC   = "8743893682"
 DEFAULT_TRUCK_NUMBER  = "UP67AT1939"
@@ -319,13 +319,25 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
     page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
+    # Apply the same offset as BARODA: +2.5 hours + random 10-20 minutes
+    base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
+    T1 = base_start + offset
+
+    # Base intervals (minutes) from T1 to subsequent events
     base_intervals = [71, 1, 1368, 900, 150, 120, 240, 150, 60, 15, 960]
-    fixed_indices = {0,1}
+    fixed_indices = {0, 1}  # Recharge and Fee intervals are fixed (not scaled)
+
     if end_time_str:
-        scaled = scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices)
+        # We need to scale the adjustable intervals so that T10 reaches the given end time.
+        # However, the scaling function expects start_time_str (which would be T1).
+        # We'll create a temporary start string from T1.
+        t1_str = T1.strftime("%d-%m-%Y %H:%M:%S")
+        scaled = scale_timeline(t1_str, end_time_str, base_intervals, fixed_indices)
     else:
         scaled = base_intervals[:]
-    T1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+
+    # Build timestamps using T1 and scaled intervals
     Recharge = T1 + timedelta(minutes=scaled[0])
     Fee = Recharge + timedelta(minutes=scaled[1])
     T2 = Fee + timedelta(minutes=scaled[2])
@@ -337,8 +349,12 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
     T8 = T7 + timedelta(minutes=scaled[8])
     T9 = T8 + timedelta(minutes=scaled[9])
     T10 = T9 + timedelta(minutes=scaled[10])
-    return {"T1":T1, "Recharge":Recharge, "Fee":Fee, "T2":T2, "T3":T3, "T4":T4,
-            "T5":T5, "T6":T6, "T7":T7, "T8":T8, "T9":T9, "T10":T10}
+
+    return {
+        "T1": T1, "Recharge": Recharge, "Fee": Fee,
+        "T2": T2, "T3": T3, "T4": T4, "T5": T5, "T6": T6,
+        "T7": T7, "T8": T8, "T9": T9, "T10": T10
+    }
 
 def draw_idfc_row(page, i, k, y, times, txn_times, balances, recharge_amount):
     row_bg = ROW_BG_ODD if (i % 2 == 0) else ROW_BG_EVEN
