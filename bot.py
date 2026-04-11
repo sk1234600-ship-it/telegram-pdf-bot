@@ -579,15 +579,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if choice == "baroda":
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
-            "✅ *BARODA_BANK* template selected.\n"
-            "Send your trip data (vehicle, DC, eway, received, etc.). 🚛🚛🚛You can send multiple trips in one message.",
+            "✅ *BARODA_BANK* template selected.\n\n"
+            "📋 *Example input (copy and edit):*\n"
+            "```\n"
+            "Vehicle: MP09HH4381\n"
+            "DC: 482\n"
+            "Eway: 09-03-2026 10:36:00\n"
+            "Received: 13-03-2026 06:00:00\n"
+            "Name: VIPUL MITTAL\n"
+            "ID: 11593956\n"
+            "Mobile: 9826260443\n"
+            "Tag: 21434130\n"
+            "```\n\n"
+            "🚛🚛You can send multiple trips separated by blank lines.\n",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
-            "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). 🚛🚛🚛You can send multiple trips in one message.",
+            "✅ *IDFC_BANK* template selected.\n\n"
+            "📋 *Example input (copy and edit):*\n"
+            "```\n"
+            "Start: 09-03-2026 10:36:00\n"
+            "Received: 13-03-2026 06:00:00\n"
+            "DC: 482\n"
+            "Name: KULDEEP KUMAR YADAV\n"
+            "Mobile: 8743893682\n"
+            "Truck: UP67AT1939\n"
+            "Owner: KULDEEP YADAV SINGH\n"
+            "Recharge: 6400\n"
+            "Opening balance: 800\n"
+            "```\n\n"
+            "🚛🚛You can send multiple trips separated by blank lines.\n",
             parse_mode="Markdown"
         )
 
