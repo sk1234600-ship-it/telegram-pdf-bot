@@ -27,8 +27,7 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
 # ================= USER AUTHORISATION =================
-# Add the numeric Telegram user IDs of allowed users
-# Get your ID by messaging @userinfobot on Telegram
+# Add your Telegram user ID (get it from @userinfobot)
 ALLOWED_USERS = {
     6615254738,  # Replace with your own user ID
     # Add other trusted user IDs here, separated by commas
@@ -47,6 +46,7 @@ def add_current_year_if_missing(date_str):
     return s
 
 def normalize_datetime_year(dt_str):
+    """Ensure dd-mm-yyyy HH:MM:SS, force year to 2026 if <2025."""
     if not dt_str:
         return dt_str
     s = dt_str.strip()
@@ -55,6 +55,10 @@ def normalize_datetime_year(dt_str):
         day, month, year, t = m.group(1), m.group(2), m.group(3), m.group(4)
         if not year:
             year = str(datetime.now().year)
+        else:
+            year_int = int(year)
+            if year_int < 2025:
+                year = "2026"   # force to 2026 if too old
         return f"{day}-{month}-{year} {t}"
     return s
 
@@ -65,13 +69,20 @@ def inject_current_year_in_raw_text(raw_text):
 # ================= UNIFIED TIME SCALING ENGINE =================
 def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
     t_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    
+    # Morning window: 05:00 to 09:40
     def in_morning_window(dt):
-        return 5 <= dt.hour <= 8 and not (dt.hour == 8 and dt.minute > 50)
+        return 5 <= dt.hour <= 9 and not (dt.hour == 9 and dt.minute > 40)
+    
     def natural_morning_end(base_dt):
         natural = base_dt + timedelta(minutes=sum(base_intervals))
-        hh = random.randint(5, 8)
-        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
+        hh = random.randint(5, 9)
+        if hh == 9:
+            mm = random.randint(0, 40)
+        else:
+            mm = random.randint(0, 59)
         return natural.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    
     if end_time_str:
         try:
             target_end = datetime.strptime(end_time_str, "%d-%m-%Y %H:%M:%S")
@@ -79,10 +90,16 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
             target_end = natural_morning_end(t_start)
     else:
         target_end = natural_morning_end(t_start)
+    
+    # Force target end into morning window
     if not in_morning_window(target_end):
-        hh = random.randint(5, 8)
-        mm = random.randint(0, 50) if hh == 8 else random.randint(0, 59)
+        hh = random.randint(5, 9)
+        if hh == 9:
+            mm = random.randint(0, 40)
+        else:
+            mm = random.randint(0, 59)
         target_end = target_end.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    
     total_target = (target_end - t_start).total_seconds() / 60.0
     fixed_total = sum(base_intervals[i] for i in fixed_indices)
     target_adjustable = int(round(total_target - fixed_total))
