@@ -151,25 +151,45 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
+    # Start offset: +2.5h + random 10-20 min
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
-    base_intervals = [40, 1713, 1465, 611, 805, 550, 166, 33, 48, 27, 264, 733]
-    fixed_indices = {0,7}
-    scaled = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
-    pay2 = t1 + timedelta(minutes=scaled[0])
-    t2   = pay2 + timedelta(minutes=scaled[1])
-    t3   = t2 + timedelta(minutes=scaled[2])
-    t4   = t3 + timedelta(minutes=scaled[3])
-    t5   = t4 + timedelta(minutes=scaled[4])
-    t6   = t5 + timedelta(minutes=scaled[5])
-    t7   = t6 + timedelta(minutes=scaled[6])
-    pay1 = t7 + timedelta(minutes=scaled[7])
-    t8   = pay1 + timedelta(minutes=scaled[8])
-    t9   = t8 + timedelta(minutes=scaled[9])
-    t10  = t9 + timedelta(minutes=scaled[10])
-    t11  = t10 + timedelta(minutes=scaled[11])
+
+    if end_dt_str:
+        # Scaling mode: use base intervals from no-scaling (without random)
+        base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
+        fixed_indices = {0, 7}  # t1->pay2 and t7->pay1
+        scaled = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
+        pay2 = t1 + timedelta(minutes=scaled[0])
+        t2   = pay2 + timedelta(minutes=scaled[1])
+        t3   = t2 + timedelta(minutes=scaled[2])
+        t4   = t3 + timedelta(minutes=scaled[3])
+        t5   = t4 + timedelta(minutes=scaled[4])
+        t6   = t5 + timedelta(minutes=scaled[5])
+        t7   = t6 + timedelta(minutes=scaled[6])
+        pay1 = t7 + timedelta(minutes=scaled[7])
+        t8   = pay1 + timedelta(minutes=scaled[8])
+        t9   = t8 + timedelta(minutes=scaled[9])
+        t10  = t9 + timedelta(minutes=scaled[10])
+        t11  = t10 + timedelta(minutes=scaled[11])
+    else:
+        # No scaling: explicit random intervals as requested
+        pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
+        t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
+        t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
+        t4   = t3   + timedelta(minutes=2*60 + 30 + random.randint(15, 30))
+        t5   = t4   + timedelta(minutes=2*60 + random.randint(15, 30))
+        t6   = t5   + timedelta(minutes=4*60 + random.randint(15, 30))
+        t7   = t6   + timedelta(minutes=2*60 + 30 + random.randint(15, 30))
+        pay1 = t7   + timedelta(minutes=25 + random.randint(5, 15))
+        t8   = pay1 + timedelta(minutes=60 + random.randint(15, 30))
+        t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
+        t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
+        t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
+
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
+    # Balances unchanged
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -279,7 +299,7 @@ JSON:
             time.sleep(2**attempt)
     return []
 
-# ================= TEMPLATE 2: IDFC_BANK (with offset) =================
+# ================= TEMPLATE 2: IDFC_BANK =================
 DEFAULT_CUSTOMER_NAME = "KULDEEP KUMAR YADAV"
 DEFAULT_MOBILE_IDFC   = "8743893682"
 DEFAULT_TRUCK_NUMBER  = "UP67AT1939"
@@ -319,36 +339,41 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
     page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
-    # Apply the same offset as BARODA: +2.5 hours + random 10-20 minutes
+    # Start offset: +2.5h + random 10-20 min
     base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
 
-    # Base intervals (minutes) from T1 to subsequent events
-    base_intervals = [71, 1, 1368, 900, 150, 120, 240, 150, 60, 15, 960]
-    fixed_indices = {0, 1}  # Recharge and Fee intervals are fixed (not scaled)
-
     if end_time_str:
-        # We need to scale the adjustable intervals so that T10 reaches the given end time.
-        # However, the scaling function expects start_time_str (which would be T1).
-        # We'll create a temporary start string from T1.
+        # Scaling mode: use base intervals from no-scaling (without random)
+        base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
+        fixed_indices = {0, 1}
         t1_str = T1.strftime("%d-%m-%Y %H:%M:%S")
         scaled = scale_timeline(t1_str, end_time_str, base_intervals, fixed_indices)
+        Recharge = T1 + timedelta(minutes=scaled[0])
+        Fee = Recharge + timedelta(minutes=scaled[1])
+        T2 = Fee + timedelta(minutes=scaled[2])
+        T3 = T2 + timedelta(minutes=scaled[3])
+        T4 = T3 + timedelta(minutes=scaled[4])
+        T5 = T4 + timedelta(minutes=scaled[5])
+        T6 = T5 + timedelta(minutes=scaled[6])
+        T7 = T6 + timedelta(minutes=scaled[7])
+        T8 = T7 + timedelta(minutes=scaled[8])
+        T9 = T8 + timedelta(minutes=scaled[9])
+        T10 = T9 + timedelta(minutes=scaled[10])
     else:
-        scaled = base_intervals[:]
-
-    # Build timestamps using T1 and scaled intervals
-    Recharge = T1 + timedelta(minutes=scaled[0])
-    Fee = Recharge + timedelta(minutes=scaled[1])
-    T2 = Fee + timedelta(minutes=scaled[2])
-    T3 = T2 + timedelta(minutes=scaled[3])
-    T4 = T3 + timedelta(minutes=scaled[4])
-    T5 = T4 + timedelta(minutes=scaled[5])
-    T6 = T5 + timedelta(minutes=scaled[6])
-    T7 = T6 + timedelta(minutes=scaled[7])
-    T8 = T7 + timedelta(minutes=scaled[8])
-    T9 = T8 + timedelta(minutes=scaled[9])
-    T10 = T9 + timedelta(minutes=scaled[10])
+        # No scaling: explicit random intervals as requested
+        Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
+        Fee = Recharge + timedelta(minutes=1)
+        T2 = Fee + timedelta(minutes=24*60 + random.randint(10, 20))
+        T3 = T2 + timedelta(minutes=15*60 + random.randint(10, 20))
+        T4 = T3 + timedelta(minutes=2*60 + 30 + random.randint(10, 20))
+        T5 = T4 + timedelta(minutes=2*60 + random.randint(10, 20))
+        T6 = T5 + timedelta(minutes=4*60 + random.randint(10, 20))
+        T7 = T6 + timedelta(minutes=2*60 + 30 + random.randint(10, 20))
+        T8 = T7 + timedelta(minutes=1*60 + random.randint(10, 20))
+        T9 = T8 + timedelta(minutes=15 + random.randint(10, 20))
+        T10 = T9 + timedelta(minutes=16*60 + random.randint(10, 20))
 
     return {
         "T1": T1, "Recharge": Recharge, "Fee": Fee,
@@ -426,7 +451,6 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     doc.close()
 
 def parse_idfc_data(raw_text, max_retries=3):
-    """Return a list of entries (array) – supports multiple trips."""
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
 Extract from the text. Return ONLY a JSON array of objects, each object may have keys:
@@ -465,7 +489,6 @@ JSON:
                         entry["received_time"] = normalize_datetime_year(entry["received_time"])
                 return parsed
             elif isinstance(parsed, dict):
-                # Single trip fallback
                 if "start_time" in parsed:
                     parsed["start_time"] = normalize_datetime_year(parsed["start_time"])
                 if "received_time" in parsed:
