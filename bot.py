@@ -27,10 +27,8 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
 # ================= USER AUTHORISATION =================
-# Add your Telegram user ID (get it from @userinfobot)
 ALLOWED_USERS = {
-    6615254738,  # Replace with your own user ID
-    # Add other trusted user IDs here, separated by commas
+    6615254738,  # Your user ID
 }
 
 # ================= COMMON HELPERS =================
@@ -46,7 +44,6 @@ def add_current_year_if_missing(date_str):
     return s
 
 def normalize_datetime_year(dt_str):
-    """Ensure dd-mm-yyyy HH:MM:SS, force year to 2026 if <2025."""
     if not dt_str:
         return dt_str
     s = dt_str.strip()
@@ -58,9 +55,17 @@ def normalize_datetime_year(dt_str):
         else:
             year_int = int(year)
             if year_int < 2025:
-                year = "2026"   # force to 2026 if too old
+                year = "2026"
         return f"{day}-{month}-{year} {t}"
     return s
+
+def normalize_received(received_str):
+    """If time missing, default to 08:00:00."""
+    if not received_str:
+        return None
+    if re.search(r'\d{2}:\d{2}:\d{2}', received_str):
+        return normalize_datetime_year(received_str)
+    return normalize_datetime_year(received_str.strip() + " 08:00:00")
 
 def inject_current_year_in_raw_text(raw_text):
     current_year = str(datetime.now().year)
@@ -70,7 +75,6 @@ def inject_current_year_in_raw_text(raw_text):
 def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
     t_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     
-    # Morning window: 05:00 to 09:40
     def in_morning_window(dt):
         return 5 <= dt.hour <= 9 and not (dt.hour == 9 and dt.minute > 40)
     
@@ -91,7 +95,6 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     else:
         target_end = natural_morning_end(t_start)
     
-    # Force target end into morning window
     if not in_morning_window(target_end):
         hh = random.randint(5, 9)
         if hh == 9:
@@ -176,13 +179,10 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
-    # Start offset: +2.5h + random 10-20 min
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
-
     if end_dt_str:
-        # Scaling mode: use base intervals from no-scaling (without random)
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
-        fixed_indices = {0, 7}  # t1->pay2 and t7->pay1
+        fixed_indices = {0, 7}
         scaled = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
         pay2 = t1 + timedelta(minutes=scaled[0])
         t2   = pay2 + timedelta(minutes=scaled[1])
@@ -197,7 +197,6 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
     else:
-        # No scaling: explicit random intervals as requested
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
@@ -210,11 +209,9 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
         t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
         t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
-
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
-    # Balances unchanged
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -295,7 +292,7 @@ Rules:
 - vehicle: full registration e.g. "MP09HH4381".
 - dc: a 2-4 digit number (standalone or after "DC-" / "DC:").
 - eway: datetime "dd-mm-yyyy HH:MM:SS".
-- received: datetime (optional).
+- received: datetime (optional) – can be just date, default time 08:00:00.
 - cust_name: after "Name:" etc.
 - cust_id: digits after "ID:".
 - mobile: 10 digits.
@@ -317,7 +314,7 @@ JSON:
                     if "eway" in entry:
                         entry["eway"] = normalize_datetime_year(entry["eway"])
                     if "received" in entry:
-                        entry["received"] = normalize_datetime_year(entry["received"])
+                        entry["received"] = normalize_received(entry["received"])
                 return parsed
             return []
         except Exception:
@@ -367,7 +364,6 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
     base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
-
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
@@ -396,7 +392,6 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=1*60 + random.randint(10, 20))
         T9 = T8 + timedelta(minutes=15 + random.randint(10, 20))
         T10 = T9 + timedelta(minutes=16*60 + random.randint(10, 20))
-
     return {
         "T1": T1, "Recharge": Recharge, "Fee": Fee,
         "T2": T2, "T3": T3, "T4": T4, "T5": T5, "T6": T6,
@@ -480,7 +475,7 @@ Extract from the text. Return ONLY a JSON array of objects, each object may have
 
 Rules:
 - start_time: datetime "dd-mm-yyyy HH:MM:SS"
-- received_time: optional, same format
+- received_time: optional – can be just date, default time 08:00:00
 - dc: a 2-4 digit number (standalone or after "DC-" / "DC:")
 - customer_name: after "Name:"
 - mobile: 10 digits
@@ -508,20 +503,20 @@ JSON:
                     if "start_time" in entry:
                         entry["start_time"] = normalize_datetime_year(entry["start_time"])
                     if "received_time" in entry:
-                        entry["received_time"] = normalize_datetime_year(entry["received_time"])
+                        entry["received_time"] = normalize_received(entry["received_time"])
                 return parsed
             elif isinstance(parsed, dict):
                 if "start_time" in parsed:
                     parsed["start_time"] = normalize_datetime_year(parsed["start_time"])
                 if "received_time" in parsed:
-                    parsed["received_time"] = normalize_datetime_year(parsed["received_time"])
+                    parsed["received_time"] = normalize_received(parsed["received_time"])
                 return [parsed]
             return []
         except Exception:
             time.sleep(2**attempt)
     return []
 
-# ================= TELEGRAM BOT HANDLERS (with whitelist) =================
+# ================= TELEGRAM BOT HANDLERS =================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -530,38 +525,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ You are not authorised to use this bot.")
         return
-
     keyboard = [
         [InlineKeyboardButton("🏦 BARODA_BANK", callback_data="baroda")],
         [InlineKeyboardButton("🚛 IDFC_BANK", callback_data="idfc")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "Welcome! Please choose your bank template:",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("Welcome! Please choose your bank template:", reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         await update.callback_query.answer("⛔ Unauthorised", show_alert=True)
         return
-
     query = update.callback_query
     await query.answer()
     choice = query.data
     if choice == "baroda":
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
-            "✅ *BARODA_BANK* template selected.\n"
-            "Send your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
+            "✅ *BARODA_BANK* template selected.\nSend your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
-            "✅ *IDFC_BANK* template selected.\n"
-            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
+            "✅ *IDFC_BANK* template selected.\nSend your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
             parse_mode="Markdown"
         )
 
@@ -570,7 +558,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ You are not authorised to use this bot.")
         return
-
     user_input = update.message.text
     template = context.user_data.get("template")
     if not template:
