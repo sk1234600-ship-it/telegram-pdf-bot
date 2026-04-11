@@ -30,7 +30,7 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
 # Add the numeric Telegram user IDs of allowed users
 # Get your ID by messaging @userinfobot on Telegram
 ALLOWED_USERS = {
-    123456789,  # Replace with your own user ID
+    6615254738,  # Replace with your own user ID
     # Add other trusted user IDs here, separated by commas
 }
 
