@@ -151,16 +151,6 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
         scaled[idx] = rounded[pos]
     return scaled, target_end
 
-def enforce_morning_window(dt):
-    """If dt is outside 05:00-09:40, clamp to nearest boundary."""
-    if dt.hour < 5:
-        return dt.replace(hour=5, minute=0, second=0, microsecond=0)
-    if dt.hour > 9:
-        return dt.replace(hour=9, minute=40, second=0, microsecond=0)
-    if dt.hour == 9 and dt.minute > 40:
-        return dt.replace(hour=9, minute=40, second=0, microsecond=0)
-    return dt
-
 # ================= TEMPLATE 1: BARODA_BANK =================
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
 DEFAULT_CUST_ID     = "11593956"
@@ -218,8 +208,7 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
-        # Ensure final time is within morning window (no exact match needed)
-        t11 = enforce_morning_window(t11)
+        # No clamping – we accept the final time as computed (should be near the random target)
     else:
         # No scaling: explicit random intervals
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
@@ -234,7 +223,6 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
         t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
         t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
-        # No window enforcement for no-scaling case
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
@@ -408,8 +396,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=scaled[8])
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
-        # Ensure final time is within morning window
-        T10 = enforce_morning_window(T10)
+        # No clamping – accept the computed final time
     else:
         Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
         Fee = Recharge + timedelta(minutes=1)
@@ -422,7 +409,6 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=1*60 + random.randint(10, 20))
         T9 = T8 + timedelta(minutes=15 + random.randint(10, 20))
         T10 = T9 + timedelta(minutes=16*60 + random.randint(10, 20))
-        # No window enforcement for no-scaling case
     return {
         "T1": T1, "Recharge": Recharge, "Fee": Fee,
         "T2": T2, "T3": T3, "T4": T4, "T5": T5, "T6": T6,
@@ -563,7 +549,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Welcome! Please choose your bank template:",
+        "Welcome! Please choose your bank template:👇",
         reply_markup=reply_markup
     )
 
@@ -643,13 +629,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
                     return
             await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-            template_doc = fitz.open("baroda_template.pdf")
+            try:
+                template_doc = fitz.open("baroda_template.pdf")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Cannot open baroda_template.pdf: {e}")
+                return
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
                     out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                    generate_baroda_pdf_to_path(template_doc, entry, out_path)
-                    pdf_paths.append(out_path)
+                    try:
+                        generate_baroda_pdf_to_path(template_doc, entry, out_path)
+                        pdf_paths.append(out_path)
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                        template_doc.close()
+                        return
                 template_doc.close()
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
@@ -674,13 +669,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
                     return
             await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-            template_doc = fitz.open("idfc_template.pdf")
+            try:
+                template_doc = fitz.open("idfc_template.pdf")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Cannot open idfc_template.pdf: {e}")
+                return
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
                     out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                    generate_idfc_pdf_to_path(template_doc, entry, out_path)
-                    pdf_paths.append(out_path)
+                    try:
+                        generate_idfc_pdf_to_path(template_doc, entry, out_path)
+                        pdf_paths.append(out_path)
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                        template_doc.close()
+                        return
                 template_doc.close()
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
