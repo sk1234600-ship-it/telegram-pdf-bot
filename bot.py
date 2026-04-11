@@ -27,9 +27,8 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
 # ================= USER AUTHORISATION =================
-ALLOWED_USERS = {
-    6615254738,  # Your user ID
-}
+# Replace with your own Telegram user ID (get from @userinfobot)
+ALLOWED_USERS = {6615254738}
 
 # ================= COMMON HELPERS =================
 def add_current_year_if_missing(date_str):
@@ -44,6 +43,7 @@ def add_current_year_if_missing(date_str):
     return s
 
 def normalize_datetime_year(dt_str):
+    """Ensure dd-mm-yyyy HH:MM:SS, force year to 2026 if <2025."""
     if not dt_str:
         return dt_str
     s = dt_str.strip()
@@ -75,6 +75,7 @@ def inject_current_year_in_raw_text(raw_text):
 def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
     t_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     
+    # Morning window: 05:00 to 09:40
     def in_morning_window(dt):
         return 5 <= dt.hour <= 9 and not (dt.hour == 9 and dt.minute > 40)
     
@@ -95,6 +96,7 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     else:
         target_end = natural_morning_end(t_start)
     
+    # Force target end into morning window
     if not in_morning_window(target_end):
         hh = random.randint(5, 9)
         if hh == 9:
@@ -139,7 +141,7 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     scaled = base_intervals[:]
     for pos, idx in enumerate(adjustable_indices):
         scaled[idx] = rounded[pos]
-    return scaled
+    return scaled, target_end   # return target_end for final correction
 
 # ================= TEMPLATE 1: BARODA_BANK =================
 DEFAULT_CUST_NAME   = "VIPUL MITTAL"
@@ -179,11 +181,14 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
+    # Start offset: +2.5h + random 10-20 min
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
+
     if end_dt_str:
+        # Scaling mode
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
         fixed_indices = {0, 7}
-        scaled = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
+        scaled, target_end = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
         pay2 = t1 + timedelta(minutes=scaled[0])
         t2   = pay2 + timedelta(minutes=scaled[1])
         t3   = t2 + timedelta(minutes=scaled[2])
@@ -196,7 +201,13 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
+        # Final correction to exactly hit target_end
+        diff = (target_end - t11).total_seconds() / 60.0
+        if abs(diff) > 0.1:
+            scaled[-1] += int(round(diff))
+            t11 = t10 + timedelta(minutes=scaled[-1])
     else:
+        # No scaling: explicit random intervals
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
@@ -209,9 +220,11 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
         t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
         t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
+
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
+    # Balances (unchanged)
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -364,11 +377,12 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
     base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
+
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
         t1_str = T1.strftime("%d-%m-%Y %H:%M:%S")
-        scaled = scale_timeline(t1_str, end_time_str, base_intervals, fixed_indices)
+        scaled, target_end = scale_timeline(t1_str, end_time_str, base_intervals, fixed_indices)
         Recharge = T1 + timedelta(minutes=scaled[0])
         Fee = Recharge + timedelta(minutes=scaled[1])
         T2 = Fee + timedelta(minutes=scaled[2])
@@ -380,6 +394,11 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=scaled[8])
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
+        # Final correction
+        diff = (target_end - T10).total_seconds() / 60.0
+        if abs(diff) > 0.1:
+            scaled[-1] += int(round(diff))
+            T10 = T9 + timedelta(minutes=scaled[-1])
     else:
         Recharge = T1 + timedelta(minutes=40 + random.randint(10, 20))
         Fee = Recharge + timedelta(minutes=1)
@@ -392,6 +411,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=1*60 + random.randint(10, 20))
         T9 = T8 + timedelta(minutes=15 + random.randint(10, 20))
         T10 = T9 + timedelta(minutes=16*60 + random.randint(10, 20))
+
     return {
         "T1": T1, "Recharge": Recharge, "Fee": Fee,
         "T2": T2, "T3": T3, "T4": T4, "T5": T5, "T6": T6,
@@ -525,31 +545,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ You are not authorised to use this bot.")
         return
+
     keyboard = [
         [InlineKeyboardButton("🏦 BARODA_BANK", callback_data="baroda")],
         [InlineKeyboardButton("🚛 IDFC_BANK", callback_data="idfc")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Welcome! Please choose your bank template:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Welcome! Please choose your bank template:",
+        reply_markup=reply_markup
+    )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         await update.callback_query.answer("⛔ Unauthorised", show_alert=True)
         return
+
     query = update.callback_query
     await query.answer()
     choice = query.data
     if choice == "baroda":
         context.user_data["template"] = "baroda"
         await query.edit_message_text(
-            "✅ *BARODA_BANK* template selected.\nSend your trip data (vehicle, DC, eway, received, etc.). You can send multiple trips in one message.",
+            "✅ *BARODA_BANK* template selected.\n"
+            "Send your trip data (vehicle, DC, eway, received, etc.). 🚛You can send multiple trips in one message.🚛",
             parse_mode="Markdown"
         )
     elif choice == "idfc":
         context.user_data["template"] = "idfc"
         await query.edit_message_text(
-            "✅ *IDFC_BANK* template selected.\nSend your trip data (start time, DC, received optional, customer details, recharge, etc.). You can send multiple trips in one message.",
+            "✅ *IDFC_BANK* template selected.\n"
+            "Send your trip data (start time, DC, received optional, customer details, recharge, etc.). 🚛You can send multiple trips in one message.🚛",
             parse_mode="Markdown"
         )
 
@@ -558,6 +585,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ You are not authorised to use this bot.")
         return
+
     user_input = update.message.text
     template = context.user_data.get("template")
     if not template:
