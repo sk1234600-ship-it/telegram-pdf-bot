@@ -288,7 +288,6 @@ DEFAULT_RECHARGE_AMOUNT = 6400
 DEFAULT_OPENING_BALANCE = 800
 DEFAULT_TOLL_DEBITS = [720, 815, 480, 410, 260, 515, 85, 340, 335, 250]
 
-# Drawing constants for IDFC
 DATE_COLOR = (0.15, 0.15, 0.15)
 TIME_COLOR = (0.48, 0.48, 0.48)
 ROW_BG_ODD  = (1.0, 1.0, 1.0)
@@ -367,7 +366,6 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     recharge  = entry.get("recharge_amount", DEFAULT_RECHARGE_AMOUNT)
     opening   = entry.get("opening_balance", DEFAULT_OPENING_BALANCE)
     tolls     = entry.get("toll_debits", DEFAULT_TOLL_DEBITS)
-    # Compute balances
     bal = opening
     balances = []
     idx = 0
@@ -495,18 +493,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not entries:
                 await update.message.reply_text("❌ Could not extract baroda data.")
                 return
-            # Validate vehicle
             vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
             for entry in entries:
                 vehicle = entry.get("vehicle", "")
                 if not vehicle_pattern.match(vehicle):
                     await update.message.reply_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
                     return
+                if not entry.get("dc"):
+                    await update.message.reply_text("❌ Missing DC number. Please provide 'DC: ...'")
+                    return
             template_doc = fitz.open("baroda_template.pdf")
             pdf_paths = []
             with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
-                    out_path = os.path.join(tmpdir, f"BARODA-{entry['dc']}.pdf")
+                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
                     generate_baroda_pdf_to_path(template_doc, entry, out_path)
                     pdf_paths.append(out_path)
                 template_doc.close()
@@ -525,7 +525,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not data or "start_time" not in data:
                 await update.message.reply_text("❌ Could not extract start time. Please provide 'Start: ...'")
                 return
-            # Check for DC number
             dc_number = data.get("dc")
             if not dc_number:
                 await update.message.reply_text("❌ Could not extract DC number. Please provide 'DC: ...'")
