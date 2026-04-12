@@ -304,14 +304,15 @@ def parse_idfc_data(raw_text):
         if not lines:
             continue
         
+        # Extract DC - now mandatory and specific (requires "DC" label)
         dc = None
         for line in lines:
-            match = re.search(r'(?:DC[:\-\s]*)?(\d{2,4})', line, re.IGNORECASE)
+            match = re.search(r'\bDC\s*[:]?\s*(\d{2,4})\b', line, re.IGNORECASE)
             if match:
                 dc = match.group(1)
                 break
         if not dc:
-            continue
+            continue   # skip trip if no DC found
         
         start_time = None
         received_time = None
@@ -635,7 +636,7 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     start_time = entry["start_time"]
     end_time = entry.get("received_time")
     times = calculate_timeline_idfc(start_time, end_time)
-    txn_times = {k: v + timedelta(minutes=2) for k, v in times.items()}
+    txn_times = {k: v + timedelta(minutes=random.randint(1, 4)) for k, v in times.items()}
     cust_name = entry.get("customer_name", DEFAULT_CUSTOMER_NAME)
     mobile    = entry.get("mobile", DEFAULT_MOBILE_IDFC)
     truck_no  = entry.get("truck_number", DEFAULT_TRUCK_NUMBER)
@@ -762,7 +763,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     template = context.user_data.get("template")
     if not template:
-        await update.message.reply_text("🤖 Please choose a template first using /start")
+        await update.message.reply_text("Please choose a template first using /start")
         return
 
     ack_msg = await update.message.reply_text("⏳ Processing your request. This may take a moment...")
