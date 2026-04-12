@@ -7,7 +7,6 @@ import re
 import random
 import json
 import time
-import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -28,7 +27,8 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
 
 # ================= USER AUTHORISATION =================
-ALLOWED_USERS = {6615254738}  # Replace with your own user ID
+# Replace with your own Telegram user ID (get from @userinfobot)
+ALLOWED_USERS = {6615254738}
 
 # ================= COMMON HELPERS =================
 def add_current_year_if_missing(date_str):
@@ -46,6 +46,7 @@ def normalize_datetime_year(dt_str):
     if not dt_str:
         return dt_str
     s = dt_str.strip()
+    # Allow 2-digit or 4-digit year
     m = re.fullmatch(r'(\d{2})-(\d{2})(?:-(\d{2,4}))?\s+(\d{2}:\d{2}:\d{2})', s)
     if m:
         day, month, year, t = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -62,6 +63,7 @@ def normalize_datetime_year(dt_str):
     return s
 
 def random_morning_time():
+    """Return a random time string HH:MM:00 within 05:00 - 09:40."""
     hour = random.randint(5, 9)
     if hour == 9:
         minute = random.randint(0, 40)
@@ -70,6 +72,7 @@ def random_morning_time():
     return f"{hour:02d}:{minute:02d}:00"
 
 def normalize_received(received_str):
+    """If time missing, append a random morning time (05:00-09:40)."""
     if not received_str:
         return None
     if re.search(r'\d{2}:\d{2}:\d{2}', received_str):
@@ -79,12 +82,6 @@ def normalize_received(received_str):
 def inject_current_year_in_raw_text(raw_text):
     current_year = str(datetime.now().year)
     return re.sub(r'(?<!\d)(\d{2}-\d{2})(?!-\d{4})', rf'\1-{current_year}', raw_text)
-
-def strip_markdown_code_fences(text: str) -> str:
-    """Remove ``` ... ``` code blocks and return the inner text."""
-    text = re.sub(r'```\w*\n', '', text)
-    text = re.sub(r'```', '', text)
-    return text.strip()
 
 # ================= UNIFIED TIME SCALING ENGINE =================
 def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, random_factor=0.05):
@@ -110,6 +107,7 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     else:
         target_end = natural_morning_end(t_start)
     
+    # Force target end into morning window
     if not in_morning_window(target_end):
         hh = random.randint(5, 9)
         if hh == 9:
@@ -157,6 +155,7 @@ def scale_timeline(start_time_str, end_time_str, base_intervals, fixed_indices, 
     return scaled, target_end
 
 def random_morning_datetime(base_dt):
+    """Return a new datetime with the same date as base_dt but random time 05:00-09:40."""
     hour = random.randint(5, 9)
     if hour == 9:
         minute = random.randint(0, 40)
@@ -202,7 +201,9 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
+    # Start offset: +2.5h + random 10-20 min
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
+
     if end_dt_str:
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
         fixed_indices = {0, 7}
@@ -219,9 +220,11 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
+        # If final time is outside morning window, replace with random morning time on the same date
         if t11.hour > 9 or (t11.hour == 9 and t11.minute > 40) or t11.hour < 5:
             t11 = random_morning_datetime(t11)
     else:
+        # No scaling: explicit random intervals
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
@@ -237,6 +240,7 @@ def calculate_data_baroda(start_time_str, end_dt_str):
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
+    # Balances
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -389,6 +393,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
     base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
+
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
@@ -405,6 +410,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
         T8 = T7 + timedelta(minutes=scaled[8])
         T9 = T8 + timedelta(minutes=scaled[9])
         T10 = T9 + timedelta(minutes=scaled[10])
+        # If final time is outside morning window, replace with random morning time
         if T10.hour > 9 or (T10.hour == 9 and T10.minute > 40) or T10.hour < 5:
             T10 = random_morning_datetime(T10)
     else:
@@ -552,6 +558,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.message.reply_text("⛔ You are not authorised to use this bot.")
         return
+
     keyboard = [
         [InlineKeyboardButton("🏦 BARODA_BANK", callback_data="baroda")],
         [InlineKeyboardButton("🚛 IDFC_BANK", callback_data="idfc")]
@@ -567,6 +574,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         await update.callback_query.answer("⛔ Unauthorised", show_alert=True)
         return
+
     query = update.callback_query
     await query.answer()
     choice = query.data
@@ -615,124 +623,98 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_input = update.message.text
-    user_input = strip_markdown_code_fences(user_input)
-
     template = context.user_data.get("template")
     if not template:
         await update.message.reply_text("Please choose a template first using /start")
         return
-
-    # Immediate acknowledgment to avoid webhook timeout
-    ack_msg = await update.message.reply_text("⏳ Processing your request. This may take a moment...")
-
-    async def generate_and_send():
-        try:
-            normalized = inject_current_year_in_raw_text(user_input)
-            if template == "baroda":
-                entries = parse_baroda_data(normalized)
-                if not entries:
-                    await ack_msg.edit_text("❌ Could not extract any baroda trip data.")
+    await update.message.reply_text("📄 Processing your data with Gemini AI...")
+    try:
+        normalized = inject_current_year_in_raw_text(user_input)
+        if template == "baroda":
+            entries = parse_baroda_data(normalized)
+            if not entries:
+                await update.message.reply_text("❌ Could not extract any baroda trip data.")
+                return
+            vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
+            for entry in entries:
+                vehicle = entry.get("vehicle", "")
+                if not vehicle_pattern.match(vehicle):
+                    await update.message.reply_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
                     return
-                vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
+                if not entry.get("dc"):
+                    await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
+                    return
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
+            try:
+                template_doc = fitz.open("baroda_template.pdf")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Cannot open baroda_template.pdf: {e}")
+                return
+            pdf_paths = []
+            with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
-                    vehicle = entry.get("vehicle", "")
-                    if not vehicle_pattern.match(vehicle):
-                        await ack_msg.edit_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
+                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                    try:
+                        generate_baroda_pdf_to_path(template_doc, entry, out_path)
+                        pdf_paths.append(out_path)
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                        template_doc.close()
                         return
-                    if not entry.get("dc"):
-                        await ack_msg.edit_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
-                        return
-                await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-                try:
-                    template_doc = fitz.open("baroda_template.pdf")
-                except Exception as e:
-                    await ack_msg.edit_text(f"❌ Cannot open baroda_template.pdf: {e}")
+                template_doc.close()
+                if len(pdf_paths) == 1:
+                    with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
+                else:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for p in pdf_paths:
+                            zipf.write(p, os.path.basename(p))
+                    zip_buffer.seek(0)
+                    await update.message.reply_document(document=zip_buffer, filename="statements.zip")
+        else:  # idfc
+            entries = parse_idfc_data(normalized)
+            if not entries:
+                await update.message.reply_text("❌ Could not extract any IDFC trip data.")
+                return
+            for entry in entries:
+                if not entry.get("start_time"):
+                    await update.message.reply_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
                     return
-                pdf_paths = []
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    for entry in entries:
-                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                        try:
-                            generate_baroda_pdf_to_path(template_doc, entry, out_path)
-                            pdf_paths.append(out_path)
-                        except Exception as e:
-                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
-                            template_doc.close()
-                            return
-                    template_doc.close()
-                    if len(pdf_paths) == 1:
-                        with open(pdf_paths[0], 'rb') as f:
-                            await update.message.reply_document(
-                                document=f,
-                                filename=os.path.basename(pdf_paths[0]),
-                                caption="✅ Successfully generated PDF!"
-                            )
-                    else:
-                        zip_buffer = io.BytesIO()
-                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                            for p in pdf_paths:
-                                zipf.write(p, os.path.basename(p))
-                        zip_buffer.seek(0)
-                        await update.message.reply_document(
-                            document=zip_buffer,
-                            filename="statements.zip",
-                            caption="✅ Successfully generated PDFs!"
-                        )
-                await ack_msg.delete()
-            else:  # idfc
-                entries = parse_idfc_data(normalized)
-                if not entries:
-                    await ack_msg.edit_text("❌ Could not extract any IDFC trip data.")
+                if not entry.get("dc"):
+                    await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
                     return
+            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
+            try:
+                template_doc = fitz.open("idfc_template.pdf")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Cannot open idfc_template.pdf: {e}")
+                return
+            pdf_paths = []
+            with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
-                    if not entry.get("start_time"):
-                        await ack_msg.edit_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
+                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                    try:
+                        generate_idfc_pdf_to_path(template_doc, entry, out_path)
+                        pdf_paths.append(out_path)
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                        template_doc.close()
                         return
-                    if not entry.get("dc"):
-                        await ack_msg.edit_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
-                        return
-                await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-                try:
-                    template_doc = fitz.open("idfc_template.pdf")
-                except Exception as e:
-                    await ack_msg.edit_text(f"❌ Cannot open idfc_template.pdf: {e}")
-                    return
-                pdf_paths = []
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    for entry in entries:
-                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                        try:
-                            generate_idfc_pdf_to_path(template_doc, entry, out_path)
-                            pdf_paths.append(out_path)
-                        except Exception as e:
-                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
-                            template_doc.close()
-                            return
-                    template_doc.close()
-                    if len(pdf_paths) == 1:
-                        with open(pdf_paths[0], 'rb') as f:
-                            await update.message.reply_document(
-                                document=f,
-                                filename=os.path.basename(pdf_paths[0]),
-                                caption="✅ Successfully generated PDF!"
-                            )
-                    else:
-                        zip_buffer = io.BytesIO()
-                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                            for p in pdf_paths:
-                                zipf.write(p, os.path.basename(p))
-                        zip_buffer.seek(0)
-                        await update.message.reply_document(
-                            document=zip_buffer,
-                            filename="statements.zip",
-                            caption="✅ Successfully generated PDFs!"
-                        )
-                await ack_msg.delete()
-        except Exception as e:
-            logger.error(f"Error in background task: {e}", exc_info=True)
-            await ack_msg.edit_text(f"❌ Error: {str(e)}")
-
-    asyncio.create_task(generate_and_send())
+                template_doc.close()
+                if len(pdf_paths) == 1:
+                    with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
+                else:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for p in pdf_paths:
+                            zipf.write(p, os.path.basename(p))
+                    zip_buffer.seek(0)
+                    await update.message.reply_document(document=zip_buffer, filename="statements.zip")
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # ================= FASTAPI WEBHOOK =================
 @asynccontextmanager
