@@ -43,19 +43,22 @@ def add_current_year_if_missing(date_str):
     return s
 
 def normalize_datetime_year(dt_str):
-    """Ensure dd-mm-yyyy HH:MM:SS, force year to 2026 if <2025."""
     if not dt_str:
         return dt_str
     s = dt_str.strip()
-    m = re.fullmatch(r'(\d{2})-(\d{2})(?:-(\d{4}))?\s+(\d{2}:\d{2}:\d{2})', s)
+    # Allow 2-digit or 4-digit year
+    m = re.fullmatch(r'(\d{2})-(\d{2})(?:-(\d{2,4}))?\s+(\d{2}:\d{2}:\d{2})', s)
     if m:
         day, month, year, t = m.group(1), m.group(2), m.group(3), m.group(4)
         if not year:
             year = str(datetime.now().year)
         else:
             year_int = int(year)
+            if len(year) == 2:
+                year_int = 2000 + year_int
             if year_int < 2025:
-                year = "2026"
+                year_int = 2026
+            year = str(year_int)
         return f"{day}-{month}-{year} {t}"
     return s
 
