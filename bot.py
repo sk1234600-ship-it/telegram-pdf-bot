@@ -637,7 +637,7 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     end_time = entry.get("received_time")
     times = calculate_timeline_idfc(start_time, end_time)
     txn_times = {k: v + timedelta(minutes=random.randint(1, 4)) for k, v in times.items()}
-    txn_times["T3"] = times["T3"]
+    txn_times["Fee"] = times["Fee"]
     cust_name = entry.get("customer_name", DEFAULT_CUSTOMER_NAME)
     mobile    = entry.get("mobile", DEFAULT_MOBILE_IDFC)
     truck_no  = entry.get("truck_number", DEFAULT_TRUCK_NUMBER)
