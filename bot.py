@@ -662,7 +662,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
                         await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
-                        await update.message.reply_text("🎉", message_effect_id=5046509860389126442)
                 else:
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -670,7 +669,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             zipf.write(p, os.path.basename(p))
                     zip_buffer.seek(0)
                     await update.message.reply_document(document=zip_buffer, filename="statements.zip")
-                    await update.message.reply_text("🎉", message_effect_id=5046509860389126442)
         else:  # idfc
             entries = parse_idfc_data(normalized)
             if not entries:
@@ -704,7 +702,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
                         await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
-                        await update.message.reply_text("🎉", message_effect_id=5046509860389126442)
                 else:
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -712,7 +709,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             zipf.write(p, os.path.basename(p))
                     zip_buffer.seek(0)
                     await update.message.reply_document(document=zip_buffer, filename="statements.zip")
-                    await update.message.reply_text("🎉", message_effect_id=5046509860389126442)
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)}")
