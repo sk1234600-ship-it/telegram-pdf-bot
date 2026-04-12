@@ -664,6 +664,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 template_doc.close()
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_text("✅ Successfully generated PDF!")
                         await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
                 else:
                     zip_buffer = io.BytesIO()
@@ -671,6 +672,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         for p in pdf_paths:
                             zipf.write(p, os.path.basename(p))
                     zip_buffer.seek(0)
+                    await update.message.reply_text("✅ Successfully generated PDFs!")
                     await update.message.reply_document(document=zip_buffer, filename="statements.zip")
         else:  # idfc
             entries = parse_idfc_data(normalized)
@@ -704,6 +706,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 template_doc.close()
                 if len(pdf_paths) == 1:
                     with open(pdf_paths[0], 'rb') as f:
+                        await update.message.reply_text("✅ Successfully generated PDF!")
                         await update.message.reply_document(document=f, filename=os.path.basename(pdf_paths[0]))
                 else:
                     zip_buffer = io.BytesIO()
@@ -711,6 +714,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         for p in pdf_paths:
                             zipf.write(p, os.path.basename(p))
                     zip_buffer.seek(0)
+                    await update.message.reply_text("✅ Successfully generated PDFs!")
                     await update.message.reply_document(document=zip_buffer, filename="statements.zip")
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
