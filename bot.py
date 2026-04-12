@@ -7,6 +7,7 @@ import re
 import random
 import json
 import time
+import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -81,8 +82,8 @@ def inject_current_year_in_raw_text(raw_text):
 
 def strip_markdown_code_fences(text: str) -> str:
     """Remove ``` ... ``` code blocks and return the inner text."""
-    text = re.sub(r'```\w*\n', '', text)   # remove opening fence with optional language
-    text = re.sub(r'```', '', text)        # remove any remaining backticks
+    text = re.sub(r'```\w*\n', '', text)
+    text = re.sub(r'```', '', text)
     return text.strip()
 
 # ================= UNIFIED TIME SCALING ENGINE =================
@@ -614,117 +615,124 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_input = update.message.text
-    # Strip markdown code fences so that copying the example still works
     user_input = strip_markdown_code_fences(user_input)
 
     template = context.user_data.get("template")
     if not template:
         await update.message.reply_text("Please choose a template first using /start")
         return
-    await update.message.reply_text("📄 Processing your data with Gemini AI...")
-    try:
-        normalized = inject_current_year_in_raw_text(user_input)
-        if template == "baroda":
-            entries = parse_baroda_data(normalized)
-            if not entries:
-                await update.message.reply_text("❌ Could not extract any baroda trip data.")
-                return
-            vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
-            for entry in entries:
-                vehicle = entry.get("vehicle", "")
-                if not vehicle_pattern.match(vehicle):
-                    await update.message.reply_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
+
+    # Immediate acknowledgment to avoid webhook timeout
+    ack_msg = await update.message.reply_text("⏳ Processing your request. This may take a moment...")
+
+    async def generate_and_send():
+        try:
+            normalized = inject_current_year_in_raw_text(user_input)
+            if template == "baroda":
+                entries = parse_baroda_data(normalized)
+                if not entries:
+                    await ack_msg.edit_text("❌ Could not extract any baroda trip data.")
                     return
-                if not entry.get("dc"):
-                    await update.message.reply_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
-                    return
-            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-            try:
-                template_doc = fitz.open("baroda_template.pdf")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Cannot open baroda_template.pdf: {e}")
-                return
-            pdf_paths = []
-            with tempfile.TemporaryDirectory() as tmpdir:
+                vehicle_pattern = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
                 for entry in entries:
-                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                    try:
-                        generate_baroda_pdf_to_path(template_doc, entry, out_path)
-                        pdf_paths.append(out_path)
-                    except Exception as e:
-                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
-                        template_doc.close()
+                    vehicle = entry.get("vehicle", "")
+                    if not vehicle_pattern.match(vehicle):
+                        await ack_msg.edit_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
                         return
-                template_doc.close()
-                if len(pdf_paths) == 1:
-                    with open(pdf_paths[0], 'rb') as f:
+                    if not entry.get("dc"):
+                        await ack_msg.edit_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
+                        return
+                await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
+                try:
+                    template_doc = fitz.open("baroda_template.pdf")
+                except Exception as e:
+                    await ack_msg.edit_text(f"❌ Cannot open baroda_template.pdf: {e}")
+                    return
+                pdf_paths = []
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    for entry in entries:
+                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                        try:
+                            generate_baroda_pdf_to_path(template_doc, entry, out_path)
+                            pdf_paths.append(out_path)
+                        except Exception as e:
+                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                            template_doc.close()
+                            return
+                    template_doc.close()
+                    if len(pdf_paths) == 1:
+                        with open(pdf_paths[0], 'rb') as f:
+                            await update.message.reply_document(
+                                document=f,
+                                filename=os.path.basename(pdf_paths[0]),
+                                caption="✅ Successfully generated PDF!"
+                            )
+                    else:
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            for p in pdf_paths:
+                                zipf.write(p, os.path.basename(p))
+                        zip_buffer.seek(0)
                         await update.message.reply_document(
-                            document=f,
-                            filename=os.path.basename(pdf_paths[0]),
-                            caption="✅ Successfully generated PDF!"
+                            document=zip_buffer,
+                            filename="statements.zip",
+                            caption="✅ Successfully generated PDFs!"
                         )
-                else:
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        for p in pdf_paths:
-                            zipf.write(p, os.path.basename(p))
-                    zip_buffer.seek(0)
-                    await update.message.reply_document(
-                        document=zip_buffer,
-                        filename="statements.zip",
-                        caption="✅ Successfully generated PDFs!"
-                    )
-        else:  # idfc
-            entries = parse_idfc_data(normalized)
-            if not entries:
-                await update.message.reply_text("❌ Could not extract any IDFC trip data.")
-                return
-            for entry in entries:
-                if not entry.get("start_time"):
-                    await update.message.reply_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
+                await ack_msg.delete()
+            else:  # idfc
+                entries = parse_idfc_data(normalized)
+                if not entries:
+                    await ack_msg.edit_text("❌ Could not extract any IDFC trip data.")
                     return
-                if not entry.get("dc"):
-                    await update.message.reply_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
-                    return
-            await update.message.reply_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
-            try:
-                template_doc = fitz.open("idfc_template.pdf")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Cannot open idfc_template.pdf: {e}")
-                return
-            pdf_paths = []
-            with tempfile.TemporaryDirectory() as tmpdir:
                 for entry in entries:
-                    out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
-                    try:
-                        generate_idfc_pdf_to_path(template_doc, entry, out_path)
-                        pdf_paths.append(out_path)
-                    except Exception as e:
-                        await update.message.reply_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
-                        template_doc.close()
+                    if not entry.get("start_time"):
+                        await ack_msg.edit_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
                         return
-                template_doc.close()
-                if len(pdf_paths) == 1:
-                    with open(pdf_paths[0], 'rb') as f:
+                    if not entry.get("dc"):
+                        await ack_msg.edit_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
+                        return
+                await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
+                try:
+                    template_doc = fitz.open("idfc_template.pdf")
+                except Exception as e:
+                    await ack_msg.edit_text(f"❌ Cannot open idfc_template.pdf: {e}")
+                    return
+                pdf_paths = []
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    for entry in entries:
+                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                        try:
+                            generate_idfc_pdf_to_path(template_doc, entry, out_path)
+                            pdf_paths.append(out_path)
+                        except Exception as e:
+                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                            template_doc.close()
+                            return
+                    template_doc.close()
+                    if len(pdf_paths) == 1:
+                        with open(pdf_paths[0], 'rb') as f:
+                            await update.message.reply_document(
+                                document=f,
+                                filename=os.path.basename(pdf_paths[0]),
+                                caption="✅ Successfully generated PDF!"
+                            )
+                    else:
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            for p in pdf_paths:
+                                zipf.write(p, os.path.basename(p))
+                        zip_buffer.seek(0)
                         await update.message.reply_document(
-                            document=f,
-                            filename=os.path.basename(pdf_paths[0]),
-                            caption="✅ Successfully generated PDF!"
+                            document=zip_buffer,
+                            filename="statements.zip",
+                            caption="✅ Successfully generated PDFs!"
                         )
-                else:
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        for p in pdf_paths:
-                            zipf.write(p, os.path.basename(p))
-                    zip_buffer.seek(0)
-                    await update.message.reply_document(
-                        document=zip_buffer,
-                        filename="statements.zip",
-                        caption="✅ Successfully generated PDFs!"
-                    )
-    except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+                await ack_msg.delete()
+        except Exception as e:
+            logger.error(f"Error in background task: {e}", exc_info=True)
+            await ack_msg.edit_text(f"❌ Error: {str(e)}")
+
+    asyncio.create_task(generate_and_send())
 
 # ================= FASTAPI WEBHOOK =================
 @asynccontextmanager
