@@ -180,7 +180,7 @@ def parse_time_string(time_str):
         minute = int(parts[1]) if len(parts) > 1 else 0
         second = int(parts[2]) if len(parts) > 2 else 0
     else:
-        # Compact format like 1621 (16:21) or 521 (5:21)
+        # Compact format like 1621 (16:21) or 521 (5:21) – only if followed by am/pm? Actually we already stripped am/pm, so handle digits only
         if len(time_str) == 4 and time_str.isdigit():
             hour = int(time_str[:2])
             minute = int(time_str[2:])
@@ -253,13 +253,16 @@ def parse_baroda_data(raw_text):
         mobile = None
         tag_account = None
         
+        # Improved time regex: requires colon OR explicit am/pm/hrs for digit-only times
+        time_regex = r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs))'
+        
         for i, line in enumerate(lines):
             lower = line.lower()
             if "eway" in lower:
                 date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
                 if date_match:
                     eway_date = add_current_year_if_missing(date_match.group(1))
-                time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
+                time_match = re.search(time_regex, line, re.IGNORECASE)
                 if time_match:
                     eway_time = time_match.group(1).strip()
                     logger.info(f"DEBUG BARODA: eway_time extracted = '{eway_time}'")
@@ -270,7 +273,7 @@ def parse_baroda_data(raw_text):
                 date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
                 if date_match:
                     received_date = add_current_year_if_missing(date_match.group(1))
-                time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
+                time_match = re.search(time_regex, line, re.IGNORECASE)
                 if time_match:
                     received_time = time_match.group(1).strip()
                 elif i+1 < len(lines) and re.search(r'^\d', lines[i+1]):
