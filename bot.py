@@ -327,7 +327,6 @@ def parse_idfc_data(raw_text):
         for line in lines:
             lower = line.lower()
             if "start" in lower:
-                # Improved regex to capture date and time, even if seconds missing or 12h format
                 dt_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
                 if dt_match:
                     date_part = add_current_year_if_missing(dt_match.group(1))
@@ -370,8 +369,6 @@ def parse_idfc_data(raw_text):
                     toll_debits = [int(n) for n in numbers]
         
         if not start_time:
-            # Log warning (visible in Render logs)
-            print(f"WARNING: Could not extract start_time from block: {block[:200]}")
             continue
         
         entry = {
@@ -435,11 +432,16 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
+    print(f"DEBUG BARODA: start_time_str = {start_time_str}")
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
+    print(f"DEBUG BARODA: t1 = {t1}")
+
     if end_dt_str:
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
         fixed_indices = {0, 7}
         scaled, target_end = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
+        print(f"DEBUG BARODA: target_end = {target_end}")
+
         pay2 = t1 + timedelta(minutes=scaled[0])
         t2   = pay2 + timedelta(minutes=scaled[1])
         t3   = t2 + timedelta(minutes=scaled[2])
@@ -452,9 +454,18 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8 + timedelta(minutes=scaled[9])
         t10  = t9 + timedelta(minutes=scaled[10])
         t11  = t10 + timedelta(minutes=scaled[11])
+
+        # Exact correction to hit target_end
+        diff = (target_end - t11).total_seconds() / 60.0
+        if abs(diff) > 0.1:
+            scaled[11] += int(round(diff))
+            t11 = t10 + timedelta(minutes=scaled[11])
+
+        # Optional safety clamp (should rarely trigger)
         if t11.hour > 9 or (t11.hour == 9 and t11.minute > 40) or t11.hour < 5:
             t11 = random_morning_datetime(t11)
     else:
+        # No scaling branch (unchanged)
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
@@ -467,9 +478,11 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         t9   = t8   + timedelta(minutes=15 + random.randint(5, 10))
         t10  = t9   + timedelta(minutes=4*60 + random.randint(15, 30))
         t11  = t10  + timedelta(minutes=12*60 + random.randint(15, 30))
+
     ts = {'t1': t1, 'pay2': pay2, 't2': t2, 't3': t3, 't4': t4,
           't5': t5, 't6': t6, 't7': t7, 'pay1': pay1, 't8': t8,
           't9': t9, 't10': t10, 't11': t11}
+    # Balances
     ob = float(random.choice(range(800, 1050, 5)))
     td = sum(TOLL_DEBITS_BARODA)
     while True:
@@ -583,22 +596,20 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
     # Debug logging
-    print(f"DEBUG: start_time_str = {start_time_str}")
+    print(f"DEBUG IDFC: start_time_str = {start_time_str}")
     try:
         base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     except Exception as e:
         print(f"ERROR: Failed to parse start_time '{start_time_str}': {e}")
-        # Fallback: assume the date part is correct and time is 00:00:00
-        # Try to extract date only
         date_match = re.search(r'(\d{2}-\d{2}-\d{4})', start_time_str)
         if date_match:
             base_start = datetime.strptime(date_match.group(1) + " 00:00:00", "%d-%m-%Y %H:%M:%S")
         else:
             raise ValueError(f"Could not parse start_time: {start_time_str}")
-    print(f"DEBUG: base_start = {base_start}")
+    print(f"DEBUG IDFC: base_start = {base_start}")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
-    print(f"DEBUG: T1 = {T1}")
+    print(f"DEBUG IDFC: T1 = {T1}")
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
