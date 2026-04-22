@@ -26,6 +26,10 @@ if not TELEGRAM_BOT_TOKEN:
 # ================= USER AUTHORISATION =================
 ALLOWED_USERS = {6615254738}  # Replace with your own user ID
 
+# ================= LOGGING =================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # ================= COMMON HELPERS =================
 def add_current_year_if_missing(date_str):
     if not date_str:
@@ -432,15 +436,15 @@ COORD = {
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
 def calculate_data_baroda(start_time_str, end_dt_str):
-    print(f"DEBUG BARODA: start_time_str = {start_time_str}")
+    logger.info(f"DEBUG BARODA: start_time_str = {start_time_str}")
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
-    print(f"DEBUG BARODA: t1 = {t1}")
+    logger.info(f"DEBUG BARODA: t1 = {t1}")
 
     if end_dt_str:
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
         fixed_indices = {0, 7}
         scaled, target_end = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
-        print(f"DEBUG BARODA: target_end = {target_end}")
+        logger.info(f"DEBUG BARODA: target_end = {target_end}")
 
         pay2 = t1 + timedelta(minutes=scaled[0])
         t2   = pay2 + timedelta(minutes=scaled[1])
@@ -595,21 +599,20 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
     page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
-    # Debug logging
-    print(f"DEBUG IDFC: start_time_str = {start_time_str}")
+    logger.info(f"DEBUG IDFC: start_time_str = {start_time_str}")
     try:
         base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
     except Exception as e:
-        print(f"ERROR: Failed to parse start_time '{start_time_str}': {e}")
+        logger.error(f"ERROR: Failed to parse start_time '{start_time_str}': {e}")
         date_match = re.search(r'(\d{2}-\d{2}-\d{4})', start_time_str)
         if date_match:
             base_start = datetime.strptime(date_match.group(1) + " 00:00:00", "%d-%m-%Y %H:%M:%S")
         else:
             raise ValueError(f"Could not parse start_time: {start_time_str}")
-    print(f"DEBUG IDFC: base_start = {base_start}")
+    logger.info(f"DEBUG IDFC: base_start = {base_start}")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
-    print(f"DEBUG IDFC: T1 = {T1}")
+    logger.info(f"DEBUG IDFC: T1 = {T1}")
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
@@ -717,9 +720,6 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     doc.close()
 
 # ================= TELEGRAM BOT HANDLERS =================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
