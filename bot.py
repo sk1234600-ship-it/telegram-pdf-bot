@@ -26,7 +26,9 @@ if not TELEGRAM_BOT_TOKEN:
 # ================= USER AUTHORISATION =================
 ALLOWED_USERS = {6615254738}  # Replace with your own user ID
 
-# ================= COMMON HELPERS =================
+# ================= COMMON HELPERS ================= 
+# Force redeploy - timestamp 2025-04-22
+
 def add_current_year_if_missing(date_str):
     if not date_str:
         return date_str
