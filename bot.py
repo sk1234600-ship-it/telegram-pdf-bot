@@ -26,9 +26,7 @@ if not TELEGRAM_BOT_TOKEN:
 # ================= USER AUTHORISATION =================
 ALLOWED_USERS = {6615254738}  # Replace with your own user ID
 
-# ================= COMMON HELPERS ================= 
-# Force redeploy - timestamp 2025-04-22
-
+# ================= COMMON HELPERS =================
 def add_current_year_if_missing(date_str):
     if not date_str:
         return date_str
@@ -306,7 +304,7 @@ def parse_idfc_data(raw_text):
         if not lines:
             continue
         
-        # Extract DC - now mandatory and specific (requires "DC" label)
+        # Extract DC - mandatory
         dc = None
         for line in lines:
             match = re.search(r'\bDC\s*[:]?\s*(\d{2,4})\b', line, re.IGNORECASE)
@@ -314,7 +312,7 @@ def parse_idfc_data(raw_text):
                 dc = match.group(1)
                 break
         if not dc:
-            continue   # skip trip if no DC found
+            continue
         
         start_time = None
         received_time = None
@@ -329,6 +327,7 @@ def parse_idfc_data(raw_text):
         for line in lines:
             lower = line.lower()
             if "start" in lower:
+                # Improved regex to capture date and time, even if seconds missing or 12h format
                 dt_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
                 if dt_match:
                     date_part = add_current_year_if_missing(dt_match.group(1))
@@ -371,6 +370,8 @@ def parse_idfc_data(raw_text):
                     toll_debits = [int(n) for n in numbers]
         
         if not start_time:
+            # Log warning (visible in Render logs)
+            print(f"WARNING: Could not extract start_time from block: {block[:200]}")
             continue
         
         entry = {
@@ -581,9 +582,23 @@ def put_text_idfc(page, x, y, text, size=8.8, color=(0.15,0.15,0.15), bold=False
     page.insert_text((x, y), str(text), fontsize=size, color=color, fontname=font)
 
 def calculate_timeline_idfc(start_time_str, end_time_str=None):
-    base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    # Debug logging
+    print(f"DEBUG: start_time_str = {start_time_str}")
+    try:
+        base_start = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S")
+    except Exception as e:
+        print(f"ERROR: Failed to parse start_time '{start_time_str}': {e}")
+        # Fallback: assume the date part is correct and time is 00:00:00
+        # Try to extract date only
+        date_match = re.search(r'(\d{2}-\d{2}-\d{4})', start_time_str)
+        if date_match:
+            base_start = datetime.strptime(date_match.group(1) + " 00:00:00", "%d-%m-%Y %H:%M:%S")
+        else:
+            raise ValueError(f"Could not parse start_time: {start_time_str}")
+    print(f"DEBUG: base_start = {base_start}")
     offset = timedelta(hours=2, minutes=30) + timedelta(minutes=random.randint(10, 20))
     T1 = base_start + offset
+    print(f"DEBUG: T1 = {T1}")
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
         fixed_indices = {0, 1}
