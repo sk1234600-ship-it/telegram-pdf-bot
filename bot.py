@@ -159,21 +159,28 @@ def random_morning_datetime(base_dt):
         minute = random.randint(0, 59)
     return base_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-# ================= REGEX PARSERS =================
+# ================= IMPROVED TIME PARSER =================
 def parse_time_string(time_str):
+    """Parse time string in 12h or 24h format. Returns HH:MM:SS."""
+    if not time_str:
+        return "00:00:00"
     time_str = time_str.strip().lower()
+    # Remove suffixes like "hrs"
     time_str = re.sub(r'\s*(hrs|hr|hours)\s*$', '', time_str).strip()
     meridian = None
     match = re.search(r'\s*(am|pm)$', time_str)
     if match:
         meridian = match.group(1)
         time_str = re.sub(r'\s*(am|pm)$', '', time_str).strip()
+    
+    # Parse hour, minute, second
     if ':' in time_str:
         parts = time_str.split(':')
         hour = int(parts[0])
-        minute = int(parts[1])
+        minute = int(parts[1]) if len(parts) > 1 else 0
         second = int(parts[2]) if len(parts) > 2 else 0
     else:
+        # Compact format like 1621 (16:21) or 521 (5:21)
         if len(time_str) == 4 and time_str.isdigit():
             hour = int(time_str[:2])
             minute = int(time_str[2:])
@@ -184,16 +191,22 @@ def parse_time_string(time_str):
             second = 0
         else:
             return "00:00:00"
+    
+    # Apply meridian (only if present)
     if meridian:
-        if 1 <= hour <= 12:
-            if meridian == 'pm' and hour != 12:
-                hour += 12
-            elif meridian == 'am' and hour == 12:
-                hour = 0
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return "00:00:00"
+        if meridian == 'pm' and hour != 12:
+            hour += 12
+        elif meridian == 'am' and hour == 12:
+            hour = 0
+    
+    # Clamp to valid ranges
+    hour = max(0, min(23, hour))
+    minute = max(0, min(59, minute))
+    second = max(0, min(59, second))
+    
     return f"{hour:02d}:{minute:02d}:{second:02d}"
 
+# ================= REGEX PARSERS =================
 def parse_baroda_data(raw_text):
     entries = []
     blocks = re.split(r'\n\s*\n', raw_text.strip())
@@ -249,8 +262,10 @@ def parse_baroda_data(raw_text):
                 time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs)?)', line, re.IGNORECASE)
                 if time_match:
                     eway_time = time_match.group(1).strip()
+                    logger.info(f"DEBUG BARODA: eway_time extracted = '{eway_time}'")
                 elif i+1 < len(lines) and re.search(r'^\d', lines[i+1]):
                     eway_time = lines[i+1].strip()
+                    logger.info(f"DEBUG BARODA: eway_time from next line = '{eway_time}'")
             elif "received" in lower:
                 date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
                 if date_match:
@@ -469,7 +484,7 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         if t11.hour > 9 or (t11.hour == 9 and t11.minute > 40) or t11.hour < 5:
             t11 = random_morning_datetime(t11)
     else:
-        # No scaling branch (unchanged)
+        # No scaling branch
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
