@@ -453,14 +453,71 @@ COORD = {
 }
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
+# ---------- NEW: Transaction ID randomisation (BARODA only) ----------
+def generate_random_transaction_id(original: str) -> str:
+    """
+    Replace every contiguous block of digits in the original string
+    with a random digit block of exactly the same length.
+    All non-digit characters (letters, slash, space) stay unchanged.
+    """
+    def repl(match):
+        digits = match.group(0)
+        return ''.join(str(random.randint(0, 9)) for _ in digits)
+    out = re.sub(r'\d+', repl, original)
+    # Hard guarantee: output must keep exact character count.
+    return out if len(out) == len(original) else original
+
+def process_transaction_ids(page):
+    """
+    Redact and replace only the transaction-id column text.
+    Keeps letters/symbols unchanged and randomizes digits with same length.
+    Coordinates are specific to the BARODA template.
+    """
+    # Tight bounds of the transaction column from template PDF.
+    x0_min, x1_max = 193.5, 303.0
+    y0_min, y1_max = 345.5, 595.5
+
+    # Only words in this column that contain at least one digit are replaced.
+    replacements = []
+    for w in page.get_text("words"):
+        x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
+        if not (x0_min <= x0 and x1 <= x1_max and y0_min <= y0 and y1 <= y1_max):
+            continue
+        if not re.search(r"\d", text):
+            continue
+
+        new_text = generate_random_transaction_id(text)
+        if new_text == text:
+            continue
+
+        # Small inset keeps nearby orange borders and separators intact.
+        pad_x = 0.2
+        inset_y = 1.0
+        rx0 = x0 - pad_x
+        ry0 = y0 + inset_y
+        rx1 = x1 + pad_x
+        ry1 = y1 - inset_y
+        if rx1 <= rx0 or ry1 <= ry0:
+            continue
+        page.add_redact_annot(fitz.Rect(rx0, ry0, rx1, ry1), fill=(1, 1, 1))
+        replacements.append((x0, y0, new_text))
+
+    if replacements:
+        page.apply_redactions()
+        for x0, y0, new_text in replacements:
+            page.insert_text((x0, y0 + FONT_SIZE), new_text, fontsize=FONT_SIZE, fontname="helvetica", color=TEXT_COLOR)
+
+# ---------- End of new transaction ID functions ----------
+
 def calculate_data_baroda(start_time_str, end_dt_str):
     logger.info(f"DEBUG BARODA: start_time_str = {start_time_str}")
     t1 = datetime.strptime(start_time_str, "%d-%m-%Y %H:%M:%S") + timedelta(hours=2.5) + timedelta(minutes=random.randint(10, 20))
     logger.info(f"DEBUG BARODA: t1 = {t1}")
 
     if end_dt_str:
+        # Base intervals: now all intervals are adjustable (pay1 and pay2 are no longer fixed)
         base_intervals = [40, 1440, 900, 150, 120, 240, 150, 25, 60, 15, 240, 720]
-        fixed_indices = {0, 7}
+        fixed_indices = set()   # <-- No fixed intervals, everything scales
         scaled, target_end = scale_timeline(start_time_str, end_dt_str, base_intervals, fixed_indices)
         logger.info(f"DEBUG BARODA: target_end = {target_end}")
 
@@ -487,7 +544,7 @@ def calculate_data_baroda(start_time_str, end_dt_str):
         if t11.hour > 9 or (t11.hour == 9 and t11.minute > 40) or t11.hour < 5:
             t11 = random_morning_datetime(t11)
     else:
-        # No scaling branch
+        # No scaling branch (unchanged)
         pay2 = t1 + timedelta(minutes=40 + random.randint(10, 20))
         t2   = pay2 + timedelta(minutes=24*60 + random.randint(15, 30))
         t3   = t2   + timedelta(minutes=15*60 + random.randint(15, 30))
@@ -542,6 +599,10 @@ def generate_baroda_pdf_to_path(template_doc, entry, output_path):
     doc = fitz.open()
     doc.insert_pdf(template_doc, from_page=0, to_page=0)
     page = doc[0]
+
+    # NEW: Process transaction IDs first (before any other redactions)
+    process_transaction_ids(page)
+
     ts, bal = calculate_data_baroda(start_time, end_time)
     hx0, hy0, hx1, hy1 = COORD["header_rect"]
     page.draw_rect(fitz.Rect(hx0, hy0, hx1, hy1), color=None, fill=(1, 129/255, 57/255))
@@ -633,7 +694,7 @@ def calculate_timeline_idfc(start_time_str, end_time_str=None):
     logger.info(f"DEBUG IDFC: T1 = {T1}")
     if end_time_str:
         base_intervals = [40, 1, 1440, 900, 150, 120, 240, 150, 60, 15, 960]
-        fixed_indices = {0, 1}
+        fixed_indices = {0, 1}   # Note: IDFC remains unchanged, still has fixed intervals
         t1_str = T1.strftime("%d-%m-%Y %H:%M:%S")
         scaled, target_end = scale_timeline(t1_str, end_time_str, base_intervals, fixed_indices)
         Recharge = T1 + timedelta(minutes=scaled[0])
