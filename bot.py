@@ -252,6 +252,7 @@ def parse_baroda_data(raw_text):
         cust_id = None
         mobile = None
         tag_account = None
+        statement_date = None
         
         # Improved time regex: requires colon OR explicit am/pm/hrs for digit-only times
         time_regex = r'(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?|\d{3,4}\s*(?:am|pm|hrs))'
@@ -294,6 +295,10 @@ def parse_baroda_data(raw_text):
                 tag_match = re.search(r'tag[:\s]+(\d+)', line, re.IGNORECASE)
                 if tag_match:
                     tag_account = tag_match.group(1)
+            elif "statement date" in lower or "stmt date" in lower:
+                date_match = re.search(r'(\d{2}-\d{2}(?:-\d{4})?)', line)
+                if date_match:
+                    statement_date = add_current_year_if_missing(date_match.group(1))
         
         if not eway_date or not eway_time:
             continue
@@ -315,6 +320,8 @@ def parse_baroda_data(raw_text):
             entry["mobile"] = mobile
         if tag_account:
             entry["tag_account"] = tag_account
+        if statement_date:
+            entry["statement_date"] = statement_date
         entries.append(entry)
     return entries
 
@@ -453,7 +460,7 @@ COORD = {
 }
 TOLL_DEBITS_BARODA = [250, 335, 340, 85, 515, 260, 410, 480, 815, 720, 720]
 
-# ---------- NEW: Transaction ID randomisation (BARODA only) ----------
+# ---------- Transaction ID randomisation (BARODA only) ----------
 def generate_random_transaction_id(original: str) -> str:
     """
     Replace every contiguous block of digits in the original string
@@ -507,7 +514,7 @@ def process_transaction_ids(page):
         for x0, y0, new_text in replacements:
             page.insert_text((x0, y0 + FONT_SIZE), new_text, fontsize=FONT_SIZE, fontname="helvetica", color=TEXT_COLOR)
 
-# ---------- End of new transaction ID functions ----------
+# ---------- End of transaction ID functions ----------
 
 def calculate_data_baroda(start_time_str, end_dt_str):
     logger.info(f"DEBUG BARODA: start_time_str = {start_time_str}")
@@ -600,7 +607,7 @@ def generate_baroda_pdf_to_path(template_doc, entry, output_path):
     doc.insert_pdf(template_doc, from_page=0, to_page=0)
     page = doc[0]
 
-    # NEW: Process transaction IDs first (before any other redactions)
+    # Process transaction IDs first (before any other redactions)
     process_transaction_ids(page)
 
     ts, bal = calculate_data_baroda(start_time, end_time)
@@ -626,7 +633,15 @@ def generate_baroda_pdf_to_path(template_doc, entry, output_path):
     scrub_and_put(page, *COORD["bal_cl_2"], f"{bal['cl']:.2f}", right=True, bold=True)
     scrub_and_put(page, *COORD["pay_1"], f"{bal['p1']:,.2f}", right=True)
     scrub_and_put(page, *COORD["pay_2"], f"{bal['p2']:,.2f}", right=True)
-    scrub_and_put(page, *COORD["stmt_sd"], (ts['t11'] + timedelta(days=1)).strftime("%d/%m/%Y"))
+
+    # Statement date: optional from user, else default (t11 + 1 day)
+    if entry.get("statement_date"):
+        stmt_date_obj = datetime.strptime(entry["statement_date"], "%d-%m-%Y")
+        stmt_date_display = stmt_date_obj.strftime("%d/%m/%Y")
+    else:
+        stmt_date_display = (ts['t11'] + timedelta(days=1)).strftime("%d/%m/%Y")
+    scrub_and_put(page, *COORD["stmt_sd"], stmt_date_display)
+
     scrub_and_put(page, *COORD["stmt_t1"], ts['t1'].strftime("%d/%m/%Y"))
     scrub_and_put(page, *COORD["stmt_t11"], ts['t11'].strftime("%d/%m/%Y"))
     scrub_and_put(page, *COORD["name_left"], cust_name)
@@ -836,6 +851,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ID: 11593956\n"
             "Mobile: 9826260443\n"
             "Tag: 21434130\n"
+            "Statement Date: 13-03-2026   (optional)\n"
             "```\n\n"
             "🚛🚛You can send multiple trips separated by blank lines.\n",
             parse_mode="Markdown"
