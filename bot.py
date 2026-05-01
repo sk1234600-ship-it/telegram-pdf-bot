@@ -206,7 +206,7 @@ def parse_time_string(time_str):
     
     return f"{hour:02d}:{minute:02d}:{second:02d}"
 
-# ================= REGEX PARSERS =================
+# ================= REGEX PARSERS (DC now optional) =================
 def parse_baroda_data(raw_text):
     entries = []
     blocks = re.split(r'\n\s*\n', raw_text.strip())
@@ -241,8 +241,7 @@ def parse_baroda_data(raw_text):
                 if not lines[i]:
                     del lines[i]
                 break
-        if not dc:
-            continue
+        # DC is now optional – we don't skip if not found
         
         eway_date = None
         eway_time = None
@@ -306,9 +305,10 @@ def parse_baroda_data(raw_text):
         parsed_eway_time = parse_time_string(eway_time)
         entry = {
             "vehicle": vehicle,
-            "dc": dc,
             "eway": f"{eway_date} {parsed_eway_time}",
         }
+        if dc:
+            entry["dc"] = dc
         if received_date and received_time:
             parsed_received_time = parse_time_string(received_time)
             entry["received"] = f"{received_date} {parsed_received_time}"
@@ -333,15 +333,14 @@ def parse_idfc_data(raw_text):
         if not lines:
             continue
         
-        # Extract DC - mandatory
+        # Extract DC - optional now
         dc = None
         for line in lines:
             match = re.search(r'\bDC\s*[:]?\s*(\d{2,4})\b', line, re.IGNORECASE)
             if match:
                 dc = match.group(1)
                 break
-        if not dc:
-            continue
+        # DC is now optional – we don't skip if not found
         
         start_time = None
         received_time = None
@@ -402,8 +401,9 @@ def parse_idfc_data(raw_text):
         
         entry = {
             "start_time": start_time,
-            "dc": dc,
         }
+        if dc:
+            entry["dc"] = dc
         if received_time:
             entry["received_time"] = received_time
         if customer_name:
@@ -596,7 +596,7 @@ def scrub_and_put(page, x0, y0, x1, y1, tx, ty, text, bold=False, right=False):
 
 def generate_baroda_pdf_to_path(template_doc, entry, output_path):
     vehicle_no = entry["vehicle"]
-    dc_number = entry["dc"]
+    dc_number = entry.get("dc")  # may be None
     start_time = entry["eway"]
     end_time = entry.get("received")
     cust_name = entry.get("cust_name", DEFAULT_CUST_NAME)
@@ -844,7 +844,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 *Example input (copy and edit):*\n"
             "```\n"
             "Vehicle: MP09HH4381\n"
-            "DC: 482\n"
+            "DC: 482 (optional)\n"
             "Eway: 09-03-2026 10:36:00\n"
             "Received: 13-03-2026 06:00:00\n"
             "Name: VIPUL MITTAL\n"
@@ -864,7 +864,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "```\n"
             "Start: 09-03-2026 10:36:00\n"
             "Received: 13-03-2026 06:00:00\n"
-            "DC: 482\n"
+            "DC: 482 (optional)\n"
             "Name: KULDEEP KUMAR YADAV\n"
             "Mobile: 8743893682\n"
             "Truck: UP67AT1939\n"
@@ -905,9 +905,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not vehicle_pattern.match(vehicle):
                         await ack_msg.edit_text(f"❌ Invalid vehicle: '{vehicle}'. Use full registration like MP09HH4381.")
                         return
-                    if not entry.get("dc"):
-                        await ack_msg.edit_text("❌ Missing DC number in one of the trips. Please provide 'DC: ...'")
-                        return
+                    # DC is now optional – no validation error if missing
                 await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
                 try:
                     template_doc = fitz.open("baroda_template.pdf")
@@ -917,14 +915,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf_paths = []
                 with tempfile.TemporaryDirectory() as tmpdir:
                     for entry in entries:
-                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                        # Determine filename: use DC if present, otherwise use vehicle number
+                        dc_or_vehicle = entry.get("dc", entry["vehicle"])
+                        out_path = os.path.join(tmpdir, f"FT-{dc_or_vehicle}.pdf")
                         try:
                             generate_baroda_pdf_to_path(template_doc, entry, out_path)
                             if not os.path.exists(out_path):
                                 raise Exception(f"File not created at {out_path}")
                             pdf_paths.append(out_path)
                         except Exception as e:
-                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                            await ack_msg.edit_text(f"❌ Failed to generate PDF: {e}")
                             template_doc.close()
                             return
                     template_doc.close()
@@ -956,8 +956,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not entry.get("start_time"):
                         await ack_msg.edit_text("❌ One of the trips missing start time. Please provide 'Start: ...'")
                         return
-                    if not entry.get("dc"):
-                        await ack_msg.edit_text("❌ One of the trips missing DC number. Please provide 'DC: ...'")
+                    # DC is now optional – no validation error if missing
+                    # Ensure truck_number exists for filename fallback
+                    if not entry.get("truck_number"):
+                        await ack_msg.edit_text("❌ One of the trips missing truck number. Please provide 'Truck: ...'")
                         return
                 await ack_msg.edit_text(f"✅ Extracted {len(entries)} trip(s). Generating PDFs...⚡⚡⚡")
                 try:
@@ -968,14 +970,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf_paths = []
                 with tempfile.TemporaryDirectory() as tmpdir:
                     for entry in entries:
-                        out_path = os.path.join(tmpdir, f"FT-{entry['dc']}.pdf")
+                        # Determine filename: use DC if present, otherwise use truck number
+                        dc_or_truck = entry.get("dc", entry["truck_number"])
+                        out_path = os.path.join(tmpdir, f"FT-{dc_or_truck}.pdf")
                         try:
                             generate_idfc_pdf_to_path(template_doc, entry, out_path)
                             if not os.path.exists(out_path):
                                 raise Exception(f"File not created at {out_path}")
                             pdf_paths.append(out_path)
                         except Exception as e:
-                            await ack_msg.edit_text(f"❌ Failed to generate PDF for DC {entry['dc']}: {e}")
+                            await ack_msg.edit_text(f"❌ Failed to generate PDF: {e}")
                             template_doc.close()
                             return
                     template_doc.close()
