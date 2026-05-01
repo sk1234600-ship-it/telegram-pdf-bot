@@ -670,6 +670,37 @@ CX_PROC = 65.8
 CX_TXN  = 125.5
 CX_AMT  = 224.1
 CX_CB   = 279.1
+COL_IDFC_TXN_ID = (440.0, 562.0)
+
+def idfc_transaction_id_row_bg(page_index, y0):
+    if page_index == 1:
+        return ROW_BG_EVEN
+    row_index = round((y0 - 344.3) / 40.0)
+    return ROW_BG_ODD if (row_index % 2 == 0) else ROW_BG_EVEN
+
+def randomize_idfc_transaction_id(original):
+    def repl(match):
+        return "".join(str(random.randint(0, 9)) for _ in match.group(0))
+    return re.sub(r"\d+", repl, original)
+
+def process_idfc_transaction_ids(doc):
+    for page_index, page in enumerate(doc):
+        replacements = []
+        for word in page.get_text("words"):
+            x0, y0, x1, y1, text = word[:5]
+            if not (COL_IDFC_TXN_ID[0] <= x0 and x1 <= COL_IDFC_TXN_ID[1]):
+                continue
+            if not re.search(r"\d", text):
+                continue
+            new_text = randomize_idfc_transaction_id(text)
+            row_bg = idfc_transaction_id_row_bg(page_index, y0)
+            page.add_redact_annot(fitz.Rect(x0 - 0.5, y0 + 0.6, x1 + 0.5, y1 - 0.4), fill=row_bg)
+            replacements.append((x0, y0, new_text))
+        if replacements:
+            page.apply_redactions()
+            for x0, y0, new_text in replacements:
+                page.insert_text((x0, y0 + 9.0), new_text, fontsize=9.0, color=TEXT_COLOR, fontname="Helvetica")
+
 
 def fmt_date(dt): return dt.strftime("%d %b %y")
 def fmt_time(dt): return dt.strftime("%I:%M %p")
@@ -780,6 +811,7 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
         balances.append(bal)
     doc = fitz.open()
     doc.insert_pdf(template_doc, from_page=0, to_page=template_doc.page_count-1)
+    process_idfc_transaction_ids(doc)
     page = doc[0]
     clear_idfc(page, 145, 88, 350, 180, fill=(1,1,1))
     put_text_idfc(page, 147, 100.935, cust_name, 10.6, TEXT_COLOR, bold=True)
@@ -791,7 +823,7 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
                   f"{times['T1'].strftime('%d %B %y')} - {times['T10'].strftime('%d %B %y')}",
                   10.6, TEXT_COLOR, bold=True)
     clear_idfc(page, 150, 260, 190, 280, fill=(1,1,1))
-    put_text_idfc(page, 152.8, 276, fmt_bal(recharge), 10.6)
+    put_text_idfc(page, 152.8, 274.1, fmt_bal(recharge), 10.6)
     keys = ["T1","Recharge","Fee","T2","T3","T4","T5","T6","T7","T8","T9"]
     for i, k in enumerate(keys):
         draw_idfc_row(page, i, k, 344.3 + i*40.0, times, txn_times, balances, recharge)
