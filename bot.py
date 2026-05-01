@@ -230,11 +230,7 @@ def parse_baroda_data(raw_text):
         
         dc = None
         for i, line in enumerate(lines[:]):
-            if re.match(r'^\d{2,4}$', line):
-                dc = line
-                del lines[i]
-                break
-            match = re.search(r'(?:DC[:\-\s]*)?(\d{2,4})', line, re.IGNORECASE)
+            match = re.search(r'\bDC\s*[:\-]?\s*(\d{2,4})\b', line, re.IGNORECASE)
             if match:
                 dc = match.group(1)
                 lines[i] = re.sub(r'DC[:\-\s]*\d{2,4}', '', line, flags=re.IGNORECASE).strip()
@@ -915,9 +911,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf_paths = []
                 with tempfile.TemporaryDirectory() as tmpdir:
                     for entry in entries:
-                        # Determine filename: use DC if present, otherwise use vehicle number
-                        dc_or_vehicle = entry.get("dc", entry["vehicle"])
-                        out_path = os.path.join(tmpdir, f"FT-{dc_or_vehicle}.pdf")
+                        # Determine filename: use FT-DC if present, otherwise vehicle number
+                        filename = f"FT-{entry['dc']}.pdf" if entry.get("dc") else f"{entry['vehicle']}.pdf"
+                        out_path = os.path.join(tmpdir, filename)
                         try:
                             generate_baroda_pdf_to_path(template_doc, entry, out_path)
                             if not os.path.exists(out_path):
@@ -970,9 +966,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pdf_paths = []
                 with tempfile.TemporaryDirectory() as tmpdir:
                     for entry in entries:
-                        # Determine filename: use DC if present, otherwise use truck number
-                        dc_or_truck = entry.get("dc", entry["truck_number"])
-                        out_path = os.path.join(tmpdir, f"FT-{dc_or_truck}.pdf")
+                        # Determine filename: use FT-DC if present, otherwise truck number
+                        filename = f"FT-{entry['dc']}.pdf" if entry.get("dc") else f"{entry['truck_number']}.pdf"
+                        out_path = os.path.join(tmpdir, filename)
                         try:
                             generate_idfc_pdf_to_path(template_doc, entry, out_path)
                             if not os.path.exists(out_path):
