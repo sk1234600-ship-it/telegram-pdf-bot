@@ -826,10 +826,10 @@ def generate_idfc_pdf_to_path(template_doc, entry, output_path):
     put_text_idfc(page, 152.8, 274.1, fmt_bal(recharge), 10.6)
     keys = ["T1","Recharge","Fee","T2","T3","T4","T5","T6","T7","T8","T9"]
     for i, k in enumerate(keys):
-        draw_idfc_row(page, i, k, 344.3 + i*40.0, times, txn_times, balances, recharge)
+        draw_idfc_row(page, i, k, 342.8 + i*40.0, times, txn_times, balances, recharge)
     if doc.page_count > 1:
         p2 = doc[1]
-        y = 44.8
+        y = 43.3
         clear_idfc(p2, COL_PROC[0], y+1, COL_PROC[1], y+27, fill=ROW_BG_EVEN)
         clear_idfc(p2, COL_TXN[0], y+1, COL_TXN[1], y+27, fill=ROW_BG_EVEN)
         clear_idfc(p2, COL_CB[0],  y+1, COL_CB[1],  y+27, fill=ROW_BG_EVEN)
